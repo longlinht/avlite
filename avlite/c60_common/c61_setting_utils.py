@@ -141,10 +141,10 @@ def load_setting(setting, profile="default") -> None:
             log.warning(f"Empty or invalid configuration file: {filepath}")
             return
 
-        profile_dict = config.get(profile,"")
-        if not profile_dict:
+        if profile not in config:
             log.warning(f"Profile '{profile}' not found in {filepath}")
             return
+        profile_dict = config.get(profile, {})
 
         for attr_name, value in profile_dict.items():
             if not hasattr(setting, attr_name):  # Changed from app.data to data
@@ -264,13 +264,16 @@ def import_all_modules(directory:str = "", pkg_name="", extensions_filter: list[
     if "avlite.extensions" not in sys.modules:
         extensions_init = extensions_directory / "__init__.py"
         if extensions_init.exists():
-            spec = importlib.util.spec_from_file_location("avlite.extensions", extensions_init)
+            spec = importlib.util.spec_from_file_location("avlite.extensions", extensions_init, submodule_search_locations=[str(extensions_directory)])
             if spec and spec.loader:
                 ext_module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(ext_module)
+                ext_module.__path__ = [str(extensions_directory)]
                 sys.modules["avlite.extensions"] = ext_module
         else:
-            sys.modules["avlite.extensions"] = types.ModuleType("avlite.extensions")
+            ext_module = types.ModuleType("avlite.extensions")
+            ext_module.__path__ = [str(extensions_directory)]
+            sys.modules["avlite.extensions"] = ext_module
     
     for pkg_path in pkg_paths:
         if not pkg_path.exists():
@@ -285,12 +288,14 @@ def import_all_modules(directory:str = "", pkg_name="", extensions_filter: list[
             log.warning(f"No __init__.py found for {package_prefix}, creating empty module")
             # Create an empty module without requiring the file
             module = types.ModuleType(package_prefix)
+            module.__path__ = [str(pkg_path)]
             sys.modules[package_prefix] = module
         else:
-            spec = importlib.util.spec_from_file_location(package_prefix, init_py_path)
+            spec = importlib.util.spec_from_file_location(package_prefix, init_py_path, submodule_search_locations=[str(pkg_path)])
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
+                module.__path__ = [str(pkg_path)]
                 sys.modules[package_prefix] = module
             else:
                 log.error(f"Failed to create module spec for {package_prefix}")
@@ -310,7 +315,9 @@ def import_all_modules(directory:str = "", pkg_name="", extensions_filter: list[
             for i in range(1, len(parts)):
                 parent_name = '.'.join(parts[:i])
                 if parent_name not in sys.modules:
-                    sys.modules[parent_name] = types.ModuleType(parent_name)
+                    parent_module = types.ModuleType(parent_name)
+                    parent_module.__path__ = [str(pkg_path)]
+                    sys.modules[parent_name] = parent_module
             
             try:
                 spec = importlib.util.spec_from_file_location(module_name, f)
@@ -321,5 +328,3 @@ def import_all_modules(directory:str = "", pkg_name="", extensions_filter: list[
                     log.debug(f"Loaded module: {module_name} from {f}")
             except Exception as e:
                 log.error(f"Failed to load module {module_name} from {f}: {e}")#, stack_info=True)
-
-

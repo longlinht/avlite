@@ -16,6 +16,7 @@ import threading
 import time
 import logging
 import json
+import math
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -28,7 +29,8 @@ from std_msgs.msg import String
 from avlite.c40_execution.c41_execution_model import Executer
 from avlite.c40_execution.c49_settings import ExecutionSettings
 from avlite.c10_perception.c11_perception_model import EgoState, AgentState
-from avlite.c20_planning.c28_trajectory import Trajectory
+from avlite.c20_planning.c21_planning_model import GlobalPlan
+from avlite.c20_planning.c28_trajectory import Trajectory, convert_sd_path_to_xy_path
 from avlite.c30_control.c31_control_model import ControlComand
 
 from .settings import ExtensionSettings
@@ -303,6 +305,8 @@ class ROSExecuter(Executer):
         self.ros_exec: Optional[SingleThreadedExecutor] = None
         self.spin_thread: Optional[threading.Thread] = None
         self.ros_started = False
+        self._global_plan_mismatch_warned = False
+        self._fallback_global_plan_set = False
         
         # Timing tracking
         self._start_real_time: float = 0.0
@@ -333,7 +337,58 @@ class ROSExecuter(Executer):
             self._start_real_time = time.time()
         
         # Get ego state from world
-        self.ego_state = self.world.get_ego_state()
+        try:
+            self.ego_state = self.world.get_ego_state()
+        except Exception as e:
+            log.error(f"Failed to get ego state from world: {e}")
+            return
+
+        # Safety guard: if global plan start is far from current ego, set fallback plan once.
+        try:
+            start = self.local_planner.global_plan.start_point
+            dist = ((self.ego_state.x - start[0]) ** 2 + (self.ego_state.y - start[1]) ** 2) ** 0.5
+            if dist > 50.0:
+                if not self._global_plan_mismatch_warned:
+                    log.warning(
+                        f"Global plan start is far from ego (dist={dist:.1f}m). "
+                        "Using straight-line fallback plan from current pose."
+                    )
+                    self._global_plan_mismatch_warned = True
+                if not self._fallback_global_plan_set:
+                    n_points = 20
+                    step = 2.0
+                    heading = self.ego_state.theta
+                    path = [
+                        (
+                            self.ego_state.x + i * step * math.cos(heading),
+                            self.ego_state.y + i * step * math.sin(heading),
+                        )
+                        for i in range(n_points)
+                    ]
+                    velocity = [5.0] * n_points
+                    traj = Trajectory(path=path, velocity=velocity)
+                    left_d = [2.0] * n_points
+                    right_d = [-2.0] * n_points
+                    left_x, left_y = convert_sd_path_to_xy_path(traj, traj.path_s, left_d)
+                    right_x, right_y = convert_sd_path_to_xy_path(traj, traj.path_s, right_d)
+                    fallback = GlobalPlan(
+                        start_point=path[0],
+                        goal_point=path[-1],
+                        path=path,
+                        velocity=velocity,
+                        left_boundary_d=left_d,
+                        right_boundary_d=right_d,
+                        left_boundary_x=left_x,
+                        left_boundary_y=left_y,
+                        right_boundary_x=right_x,
+                        right_boundary_y=right_y,
+                        trajectory=traj,
+                    )
+                    self.local_planner.set_global_plan(fallback)
+                    self._fallback_global_plan_set = True
+                # Continue with control using fallback plan.
+        except Exception:
+            pass
         
         # Run localization strategy (before perception)
         if call_localize and self.localization:

@@ -152,7 +152,11 @@ class WorldNode(Node):
         
         # Apply control and step the world
         if self.last_cmd:
-            self.world.control_ego_state(self.last_cmd, dt=self.sim_dt)
+            try:
+                self.world.control_ego_state(self.last_cmd, dt=self.sim_dt)
+            except Exception as e:
+                self.get_logger().error(f"World control error: {e}")
+                return
         
         # Track elapsed simulation time
         self._elapsed_sim_time += self.sim_dt
@@ -173,7 +177,11 @@ class WorldNode(Node):
                     self.ros_data.elapsed_sim_time = self._elapsed_sim_time
         
         # Get updated state
-        ego_state = self.world.get_ego_state()
+        try:
+            ego_state = self.world.get_ego_state()
+        except Exception as e:
+            self.get_logger().error(f"World ego state error: {e}")
+            return
         
         # Publish ego state
         self._publish_ego_state(ego_state)

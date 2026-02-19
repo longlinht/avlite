@@ -7,7 +7,7 @@ B:
   global_planner: RaceGlobalPlanner
   global_trajectory: data/yas_marina_real_race_line_mue_0_5_3_m_margin.json
   hd_map: data/Town10HD_Opt.xodr
-  local_planner: RNDPlanner
+  local_planner: GreedyLatticePlanner
   perception: ''
   replan_dt: 0.5
   sim_dt: 0.01
@@ -16,6 +16,7 @@ Carla_Town10:
   basic_sim_npc_control: true
   basic_sim_npc_speed_factor: 0.8
   bridge: CarlaBridge
+  carla_scene: Town10HD_Opt
   community_extensions:
     delete_me: /home/mkhonji/Dropbox/20-development/21-software-dev/21.2-AVlite/avlite-plugins/delete_me
   control_dt: 0.01
@@ -24,12 +25,12 @@ Carla_Town10:
   - executer_multi_processing
   - test_ext
   - multi_object_prediction
-  executer_type: ROSExecuter
+  executer_type: SyncExecuter
   filepath: configs/c40_execution.yaml
   global_planner: HDMapGlobalPlanner
-  global_trajectory: data/yas_marina_real_race_line_mue_0_5_3_m_margin.json
+  global_trajectory: data/Town10HD_Opt_loop_slow_avlite.json
   hd_map: data/Town10HD_Opt.xodr
-  local_planner: RNDPlanner
+  local_planner: GreedyLatticePlanner
   perception: MultiObjectPredictor
   perception_dt: 0.5
   provide_ground_truth: true
@@ -55,7 +56,7 @@ SAN:
   global_planner: HDMapGlobalPlanner
   global_trajectory: data/yas_marina_real_race_line_mue_0_5_3_m_margin.json
   hd_map: data/san_campus.xodr
-  local_planner: RNDPlanner
+  local_planner: GreedyLatticePlanner
   localization: Localization
   localization_dt: 0.1
   perception: MultiObjectPredictor
@@ -167,7 +168,7 @@ source defaults:
   global_planner: HDMapGlobalPlanner
   global_trajectory: data/yas_marina_real_race_line_mue_0_5_3_m_margin.json
   hd_map: data/san_campus.xodr
-  local_planner: RNDPlanner
+  local_planner: GreedyLatticePlanner
   localization: Localization
   localization_dt: 0.1
   perception: MultiObjectPredictor

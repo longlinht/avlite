@@ -7,13 +7,13 @@ Carla_Town10:
   control_dt: 0.01
   controller_type: StanleyController
   dark_mode: true
-  default_global_plan_file: data/yas_marina_real_race_line_mue_0_5_3_m_margin.json
+  default_global_plan_file: data/Town10HD_Opt_loop_slow_avlite.json
   disable_log: false
   enable_joystick: true
   exec_control: true
   exec_perceive: true
   exec_plan: true
-  executer_type: ROSExecuter
+  executer_type: SyncExecuter
   execution_bridge: CarlaBridge
   fg_color: white
   frenet_view_follow_planner: false
@@ -24,7 +24,7 @@ Carla_Town10:
   global_zoom: 240
   load_extensions: true
   local_plan_view: true
-  local_planner_type: RNDPlanner
+  local_planner_type: GreedyLatticePlanner
   log_font: Courier
   log_font_size: 11
   log_level: INFO
@@ -85,7 +85,7 @@ SAN:
   global_zoom: 110
   load_extensions: true
   local_plan_view: true
-  local_planner_type: RNDPlanner
+  local_planner_type: GreedyLatticePlanner
   localization_dt: 0.1
   localization_type: Localization
   log_font: Courier
@@ -337,7 +337,7 @@ source defaults:
   global_zoom: 130
   load_extensions: true
   local_plan_view: true
-  local_planner_type: RNDPlanner
+  local_planner_type: GreedyLatticePlanner
   localization_dt: 0.1
   localization_type: Localization
   log_font: Courier

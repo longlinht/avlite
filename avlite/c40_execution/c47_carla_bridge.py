@@ -55,6 +55,7 @@ class CarlaBridge(WorldBridge):
         self.follow_camera = True 
         self.spawn_points = []  
         self.scene_name = scene_name  
+        self._spawn_time = None
 
         # Sensor actors & thread-safe buffers
         self._lidar_sensor = None
@@ -81,12 +82,30 @@ class CarlaBridge(WorldBridge):
         try:
             self.client = carla.Client(host, port)
             self.client.set_timeout(timeout)
-            log.info(f"Available maps: {self.client.get_available_maps()}")
+            available_maps = self.client.get_available_maps()
+            log.info(f"Available maps: {available_maps}")
 
-            if scene_name not in self.client.get_available_maps():
+            scene = (scene_name or "").strip()
+            prefix = "/Game/Carla/Maps/"
+            # Normalize requested scene name (allow prefixed or bare map names)
+            if scene.startswith(prefix):
+                scene = scene[len(prefix):]
+
+            # Build a lookup from bare name -> full available entry
+            normalized = {}
+            for m in available_maps:
+                bare = m[len(prefix):] if m.startswith(prefix) else m
+                normalized[bare] = m
+
+            if scene in normalized:
+                scene = normalized[scene]
+            elif scene_name in available_maps:
+                scene = scene_name
+            else:
                 raise ValueError(f"Scene {scene_name} not found in available maps.")
-            self.world = self.client.load_world(scene_name)
-            log.info(f"Connected to Carla at {host}:{port} and loaded scene {scene_name}")
+
+            self.world = self.client.load_world(scene)
+            log.info(f"Connected to Carla at {host}:{port} and loaded scene {scene}")
 
             # Get the spectator to control the camera
             self.spectator = self.world.get_spectator()
@@ -197,24 +216,36 @@ class CarlaBridge(WorldBridge):
             log.warning("No spawn points found in Carla map! Using arbitrary spawn point.")
             spawn_point = carla.Transform(carla.Location(x=state.x, y=state.y, z=1.0))
 
-        # Try to spawn the vehicle
-        self.vehicle = self.world.spawn_actor(self.vehicle_blueprint, spawn_point)
+        # Try to spawn the vehicle (may fail due to collision)
+        try:
+            self.vehicle = self.world.spawn_actor(self.vehicle_blueprint, spawn_point)
+        except Exception as e:
+            log.warning(f"Spawn failed at selected point: {e}")
+            self.vehicle = None
+        if self.vehicle:
+            self._spawn_time = time.time()
 
-        # If spawning fails, try other spawn points
+        # If spawning fails, try other spawn points (bounded retries)
         if not self.vehicle and self.spawn_points:
-            log.warning("Failed to spawn at selected point. Trying other spawn points.")
-            for i, spawn_point in enumerate(self.spawn_points):
-                self.vehicle = self.world.try_spawn_actor(self.vehicle_blueprint, spawn_point)
+            max_attempts = min(20, len(self.spawn_points))
+            log.warning(f"Failed to spawn at selected point. Trying up to {max_attempts} other spawn points.")
+            for i, spawn_point in enumerate(self.spawn_points[:max_attempts]):
+                try:
+                    self.vehicle = self.world.try_spawn_actor(self.vehicle_blueprint, spawn_point)
+                except Exception as e:
+                    log.debug(f"Spawn attempt {i} failed: {e}")
+                    self.vehicle = None
                 if self.vehicle:
                     log.info(f"Successfully spawned at alternative point {i}")
                     # Update the state to match the spawn point
                     state.x = spawn_point.location.x
                     state.y = spawn_point.location.y
                     state.theta = spawn_point.rotation.yaw * (3.14159 / 180.0)
+                    self._spawn_time = time.time()
                     break
 
             if not self.vehicle:
-                log.error("Failed to spawn vehicle at any spawn point!")
+                log.error(f"Failed to spawn vehicle after {max_attempts} attempts. No free spawn points?")
 
         # Attach sensors once vehicle exists
         if self.vehicle:
@@ -337,6 +368,12 @@ class CarlaBridge(WorldBridge):
         brake = float(brake)
         steer = float(-cmd.steer)
 
+        # Brief stabilization after spawn: avoid sudden steering into nearby props.
+        if self._spawn_time is not None and (time.time() - self._spawn_time) < 0.8:
+            steer = 0.0
+            throttle = 0.0
+            brake = 0.0
+
         # Determine reverse state
         is_nearly_stopped = current_velocity < 0.1  # threshold for "stopped"
         wants_reverse = cmd.acceleration < 0
@@ -386,6 +423,9 @@ class CarlaBridge(WorldBridge):
         """
         if not self.vehicle:
             self.__spawn_vehicle(self.ego_state)
+        if not self.vehicle:
+            log.warning("Ego vehicle not spawned; returning last known ego state.")
+            return self.ego_state
         transform = self.vehicle.get_transform()
         velocity = self.vehicle.get_velocity()
         
@@ -595,4 +635,3 @@ def draw_actor_bbox(world,static_car_bboxes, color=None, life_time=0.05, thickne
                 life_time=life_time
             )
     
-

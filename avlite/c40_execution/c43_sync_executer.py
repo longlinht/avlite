@@ -2,6 +2,7 @@ import logging
 import time
 
 from avlite.c20_planning.c21_planning_model import GlobalPlan
+from avlite.c20_planning.c28_trajectory import Trajectory, convert_sd_path_to_xy_path
 from avlite.c10_perception.c11_perception_model import PerceptionModel, EgoState, AgentState
 from avlite.c10_perception.c12_perception_strategy import PerceptionStrategy
 from avlite.c10_perception.c13_localization_strategy import LocalizationStrategy
@@ -45,6 +46,8 @@ class SyncExecuter(Executer):
         self.__planner_last_time = 0.0
         self.__controller_last_time = 0.0
         self.__localization_last_time = 0.0
+        self._global_plan_mismatch_warned = False
+        self._fallback_global_plan_set = False
 
 
     def step(self, perception_dt = 0.01,  control_dt=0.01, replan_dt=0.01, localization_dt=0.01, sim_dt=0.01, call_replan=True, call_control=True, call_perceive=True, call_localize=True,) -> None:
@@ -54,6 +57,52 @@ class SyncExecuter(Executer):
         t0 = time.time()
 
         self.ego_state = self.world.get_ego_state()
+        # Safety guard: if global plan start is far from current ego, set fallback plan once.
+        try:
+            start = self.local_planner.global_plan.start_point
+            dist = ((self.ego_state.x - start[0]) ** 2 + (self.ego_state.y - start[1]) ** 2) ** 0.5
+            if dist > 50.0:
+                if not self._global_plan_mismatch_warned:
+                    log.warning(
+                        f"Global plan start is far from ego (dist={dist:.1f}m). "
+                        "Using straight-line fallback plan from current pose."
+                    )
+                    self._global_plan_mismatch_warned = True
+                if not self._fallback_global_plan_set:
+                    n_points = 20
+                    step = 2.0
+                    heading = self.ego_state.theta
+                    path = [
+                        (
+                            self.ego_state.x + i * step * math.cos(heading),
+                            self.ego_state.y + i * step * math.sin(heading),
+                        )
+                        for i in range(n_points)
+                    ]
+                    velocity = [5.0] * n_points
+                    traj = Trajectory(path=path, velocity=velocity)
+                    left_d = [2.0] * n_points
+                    right_d = [-2.0] * n_points
+                    left_x, left_y = convert_sd_path_to_xy_path(traj, traj.path_s, left_d)
+                    right_x, right_y = convert_sd_path_to_xy_path(traj, traj.path_s, right_d)
+                    fallback = GlobalPlan(
+                        start_point=path[0],
+                        goal_point=path[-1],
+                        path=path,
+                        velocity=velocity,
+                        left_boundary_d=left_d,
+                        right_boundary_d=right_d,
+                        left_boundary_x=left_x,
+                        left_boundary_y=left_y,
+                        right_boundary_x=right_x,
+                        right_boundary_y=right_y,
+                        trajectory=traj,
+                    )
+                    self.local_planner.set_global_plan(fallback)
+                    self._fallback_global_plan_set = True
+                # Continue with control using fallback plan.
+        except Exception:
+            pass
 
         if call_replan:
             dt_p = self.elapsed_sim_time - self.__planner_last_time
@@ -153,5 +202,3 @@ class SyncExecuter(Executer):
         super().reset()
         self.__prev_exec_time = None
         self.__time_since_last_replan = 0
-
-

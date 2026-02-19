@@ -701,7 +701,16 @@ class AttentionGMM(nn.Module):
         if not os.path.exists(ckpt_path):
             raise FileNotFoundError(f"Checkpoint file not found at: {ckpt_path}")
         try:
-            checkpoint = torch.load(ckpt_path, map_location=self.device)
+            # PyTorch >=2.6 defaults weights_only=True; try safe load first, then fall back if needed.
+            try:
+                checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=True)
+            except TypeError:
+                # Older PyTorch does not support weights_only.
+                checkpoint = torch.load(ckpt_path, map_location=self.device)
+            except Exception as e:
+                logger = logging.getLogger('AttentionGMM')
+                logger.warning(f"Safe checkpoint load failed: {e}. Retrying with weights_only=False.")
+                checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=False)
             self.load_state_dict(state_dict=checkpoint['model_state_dict'])
             self.to(self.device)  # Move the entire model to device
             
@@ -2252,4 +2261,3 @@ class TreeNode:
                         weights.append(self.weight + weight)
         return branches,weights,sigmas  
     
-
