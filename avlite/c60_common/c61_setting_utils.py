@@ -324,6 +324,10 @@ def import_all_modules(directory:str = "", pkg_name="", extensions_filter: list[
                 continue
             if "test" in f.parts:
                 continue
+            if any(part in {"vendor", "build", "install", "log"} for part in f.parts):
+                continue
+            if f.name == "setup.py":
+                continue
                 
             # Create module name from relative path
             relative_path = f.relative_to(pkg_path)
@@ -354,4 +358,3 @@ def import_all_modules(directory:str = "", pkg_name="", extensions_filter: list[
                     log.debug(f"Loaded module: {module_name} from {f}")
             except Exception as e:
                 log.error(f"Failed to load module {module_name} from {f}: {e}")#, stack_info=True)
-

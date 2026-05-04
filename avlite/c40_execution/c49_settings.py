@@ -26,7 +26,7 @@ class ExecutionSettings:
     global_trajectory = "data/yas_marina_real_race_line_mue_0_5_3_m_margin.json"
     hd_map = "data/san_campus.xodr"
 
-    community_extensions: dict[str,str] = {"delete_me": "/home/mkhonji/Dropbox/20-development/21-software-dev/21.2-AVlite/avlite-plugins/delete_me"}
+    community_extensions: dict[str,str] = {"a2rl": "/home/a2rl/avlite/community_plugins/a2rl"}
     default_extensions: list[str] = []
 
     # Bridge sensor flags (toggled by UI checkboxes)
