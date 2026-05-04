@@ -38,4 +38,3 @@ class ExecutionSettings:
     basic_sim_npc_speed_factor = 0.8   
     basic_sim_npc_control = True  # If True, NPCs will follow the default trajectory at the above speed factor
 
-
