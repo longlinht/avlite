@@ -24,9 +24,10 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 class VisualizerApp(tk.Tk):
     exec: SyncExecuter
 
-    def __init__(self):
+    def __init__(self, initial_exec=None, initialize_stack: bool = True):
         super().__init__()
-        self.exec = executor_factory()
+        self.exec = initial_exec if initial_exec is not None else executor_factory()
+        self.initialize_stack = initialize_stack
         self.loading_overlay = None
         self.ui_initialized = False
         self.show_loading_overlay()
@@ -72,11 +73,14 @@ class VisualizerApp(tk.Tk):
         self.grid_rowconfigure(0, weight=1)  # make the plot views expand
         self.update_idletasks()
         
-        log.info("Reloading stack to ensure configuration is applied.")
-        self.load_configs()
-        log.warning(f"map is {ExecutionSettings.hd_map}")
-        self.reload_stack()
-        log.warning(f"map after is {ExecutionSettings.hd_map}")
+        if self.initialize_stack:
+            log.info("Reloading stack to ensure configuration is applied.")
+            self.load_configs()
+            log.warning(f"map is {ExecutionSettings.hd_map}")
+            self.reload_stack()
+            log.warning(f"map after is {ExecutionSettings.hd_map}")
+        else:
+            self.exec_visualize_view.bridge_frame.update_for_bridge(self.exec.world.capabilities)
 
         # Bind to window resize to maintain ratio
         self.update_shortcut_mode()

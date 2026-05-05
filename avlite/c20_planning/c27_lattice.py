@@ -98,12 +98,19 @@ class Lattice:
             self.lattice_nodes_by_level[l].append(node)  # always a node at track line
             self.nodes.append(node)
 
-            for _ in np.arange(sample_size - 1):
-                target_wp = self.global_trajectory.get_closest_waypoint_frm_sd(s1_, 0)
-                d1_ = np.random.uniform(
-                    self.ref_left_boundary_d[target_wp] - boundary_clearance,
-                    self.ref_right_boundary_d[target_wp] + boundary_clearance,
-                )
+            target_wp = self.global_trajectory.get_closest_waypoint_frm_sd(s1_, 0)
+            left_limit = self.ref_left_boundary_d[target_wp] - boundary_clearance
+            right_limit = self.ref_right_boundary_d[target_wp] + boundary_clearance
+            lateral_samples = np.linspace(
+                min(right_limit, left_limit),
+                max(right_limit, left_limit),
+                max(sample_size, 1),
+            )
+            if len(lateral_samples) > 1:
+                center_idx = int(np.argmin(np.abs(lateral_samples - dg)))
+                lateral_samples = np.delete(lateral_samples, center_idx)
+
+            for d1_ in lateral_samples:
                 x, y = self.global_trajectory.convert_sd_to_xy(s1_, d1_)
                 n_ = Node(s1_, d1_, x, y)
                 self.nodes.append(n_)
