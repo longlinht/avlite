@@ -5,8 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 import time
 
-from avlite.c40_execution.c46_basic_sim import BasicSim
-from avlite.c40_execution.c47_carla_bridge import CarlaBridge
+from avlite.c40_execution.c41_execution_model import WorldBridge
 from avlite.c40_execution.c41_execution_model import Executer
 from avlite.c60_common.c62_capabilities import WorldCapability
 
@@ -74,13 +73,12 @@ class ExecView(ttk.Frame):
         sim_dt.pack(side=tk.LEFT)
         sim_dt.bind("<Return>", self.text_on_enter)
 
-
         self.executer_dropdown_menu = ttk.Combobox(exec_first_frame, textvariable=self.root.setting.executer_type, state="readonly",)
         self.executer_dropdown_menu["values"] = list(Executer.registry.keys())
-        # self.global_planner_dropdown_menu.current(0)  
         self.executer_dropdown_menu.state(["readonly"])
         self.executer_dropdown_menu.bind("<<ComboboxSelected>>", lambda e: self.root.reload_stack(reload_code=False))
         self.executer_dropdown_menu.pack(side = tk.RIGHT)
+
 
 
         ## Second frame
@@ -93,21 +91,24 @@ class ExecView(ttk.Frame):
 
 
         ## Third frame 
-        ttk.Label(exec_third_frame, text="Bridge:").pack(side=tk.LEFT)
-        ttk.Radiobutton( exec_third_frame, text="Basic Sim", variable=self.root.setting.execution_bridge, value=BasicSim.__name__,
-            command=lambda: self.root.reload_stack(reload_code=False),
-        ).pack(side=tk.LEFT)
-        ttk.Radiobutton( exec_third_frame, text="Carla", variable=self.root.setting.execution_bridge, value=CarlaBridge.__name__,
-            command=lambda: self.root.reload_stack(reload_code=False),
-        ).pack(side=tk.LEFT)
-        ttk.Radiobutton( exec_third_frame, text="Gazebo Ign", variable=self.root.setting.execution_bridge, value="GazeboIgnitionBridge",
-            command=lambda: self.root.reload_stack(reload_code=False),
-        ).pack(side=tk.LEFT)
+        # ttk.Label(exec_third_frame, text="World Bridge: ").pack(side=tk.LEFT)
+        # ttk.Radiobutton( exec_third_frame, text="Basic Sim", variable=self.root.setting.execution_bridge, value=BasicSim.__name__,
+        #     command=lambda: self.root.reload_stack(reload_code=False),
+        # ).pack(side=tk.LEFT)
+        # ttk.Radiobutton( exec_third_frame, text="Carla", variable=self.root.setting.execution_bridge, value=CarlaBridge.__name__,
+        #     command=lambda: self.root.reload_stack(reload_code=False),
+        # ).pack(side=tk.LEFT)
+        # ttk.Radiobutton( exec_third_frame, text="Gazebo Ign", variable=self.root.setting.execution_bridge, value="GazeboIgnitionBridge",
+        #     command=lambda: self.root.reload_stack(reload_code=False),
+        # ).pack(side=tk.LEFT)
+        vehicle_state_label = ttk.Label(exec_third_frame, font=self.root.small_font, textvariable=self.root.setting.vehicle_state)
+        vehicle_state_label.pack(side=tk.TOP, expand=True, fill=tk.X, padx=5, pady=5)
 
-        global_tj_file=ttk.Entry( exec_third_frame, textvariable=self.root.setting.default_global_plan_file, width=15,)
+
+        global_tj_file=ttk.Entry( exec_second_frame, textvariable=self.root.setting.default_global_plan_file, width=15,)
         global_tj_file.pack(side=tk.RIGHT, padx = 5, pady=5)
         global_tj_file.bind("<Return>", self.text_on_enter)
-        ttk.Label(exec_third_frame, text="Default Global Trajectory").pack(side=tk.RIGHT, padx=5, pady=5)
+        ttk.Label(exec_second_frame, text="Default Global Trajectory").pack(side=tk.RIGHT, padx=5, pady=5)
 
 
     def text_on_enter(self, event):
@@ -185,21 +186,26 @@ class ExecSettingsFrame(ttk.LabelFrame):
         super().__init__(view, text="Executables")
         self.root = root
         ttk.Checkbutton(self, text="Control", variable=self.root.setting.exec_control).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(self, text="Plan", variable=self.root.setting.exec_plan).grid(row=1, column=0, sticky="w")
-        ttk.Checkbutton(self, text="Percieve", variable=self.root.setting.exec_perceive).grid(row=2, column=0, sticky="w")
-        ttk.Checkbutton(self, text="Localize", variable=self.root.setting.exec_localize).grid(row=3, column=0, sticky="w")
+        ttk.Checkbutton(self, text="Planning", variable=self.root.setting.exec_plan).grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(self, text="Perception", variable=self.root.setting.exec_perceive).grid(row=2, column=0, sticky="w")
+        ttk.Checkbutton(self, text="Localization", variable=self.root.setting.exec_localize).grid(row=3, column=0, sticky="w")
 
 
 class BridgeFrame(ttk.LabelFrame):
     def __init__(self, root: VisualizerApp, view):
         super().__init__(view, text="Bridge Setting")
         self.root = root
+        world_bridge_dropdown_menu = ttk.Combobox(self, textvariable=self.root.setting.execution_bridge, width=10, state="readonly",)
+        world_bridge_dropdown_menu["values"] = list(WorldBridge.registry.keys())
+        world_bridge_dropdown_menu.state(["readonly"])
+        world_bridge_dropdown_menu.bind("<<ComboboxSelected>>", lambda e: self.root.reload_stack(reload_code=False))
+        world_bridge_dropdown_menu.grid(row=0, column=0, pady=0, sticky="we")
 
         self.chk_ground_truth = ttk.Checkbutton(self, text="Ground Truth", variable=self.root.setting.bridge_provide_ground_truth_detection)
-        self.chk_ground_truth.grid(row=0, column=0, sticky="w")
+        self.chk_ground_truth.grid(row=1, column=0, sticky="w")
 
         self.chk_rgb_image = ttk.Checkbutton(self, text="RGB Image", variable=self.root.setting.bridge_provide_rgb_image)
-        self.chk_rgb_image.grid(row=1, column=0, sticky="w")
+        self.chk_rgb_image.grid(row=2, column=0, sticky="w")
 
         # self.chk_depth_image = ttk.Checkbutton(self, text="Provide Depth Image", variable=self.root.setting.bridge_provide_depth_image)
         # self.chk_depth_image.grid(row=2, column=0, sticky="w")
@@ -207,12 +213,14 @@ class BridgeFrame(ttk.LabelFrame):
         self.chk_lidar_data = ttk.Checkbutton(self, text="LiDAR Data", variable=self.root.setting.bridge_provide_lidar_data)
         self.chk_lidar_data.grid(row=3, column=0, sticky="w")
 
+
+
     def update_for_bridge(self, capabilities: set):
         """Enable / disable checkboxes based on the active bridge's capabilities."""
         cap_map = {
             WorldCapability.GT_DETECTION: self.chk_ground_truth,
-            WorldCapability.RGB_IMAGE:    self.chk_rgb_image,
-            WorldCapability.LIDAR:        self.chk_lidar_data,
+            WorldCapability.CAMERA_RGB:    self.chk_rgb_image,
+            WorldCapability.LIDAR_3D:        self.chk_lidar_data,
         }
         for cap, chk in cap_map.items():
             if cap in capabilities:

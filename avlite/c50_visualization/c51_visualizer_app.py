@@ -388,7 +388,7 @@ class VisualizerApp(tk.Tk):
             self.local_plan_plot_view.plot()
 
         if not self.setting.shortcut_mode.get():
-            self.setting.vehicle_state.set( f"Loc: ({self.exec.ego_state.x:+7.2f}, {self.exec.ego_state.y:+7.2f}),\nVel: {self.exec.ego_state.velocity:5.2f} ({self.exec.ego_state.velocity*3.6:6.2f} km/h),\nθ: {self.exec.ego_state.theta:+5.1f}")
+            self.setting.vehicle_state.set( f"Loc: ({self.exec.ego_state.x:+7.2f}, {self.exec.ego_state.y:+7.2f}), Vel: {self.exec.ego_state.velocity:5.2f} ({self.exec.ego_state.velocity*3.6:6.2f} km/h), θ: {self.exec.ego_state.theta:+5.1f}")
             self.setting.current_wp.set(str(self.exec.local_planner.global_trajectory.current_wp))
 
             # TODO: need to connect to a tkinter variable instead
@@ -421,6 +421,7 @@ class VisualizerApp(tk.Tk):
         load_all_stack_settings(profile=profile, load_extensions=self.setting.load_extensions.get())
         if not only_stack:
             load_setting(self.setting, profile=profile)
+            self.setting.normalize_gt_sentinels()
         self.config_shortcut_view.update_setting_window()
         log.info(f"Loaded settings from profile: {profile}")
 

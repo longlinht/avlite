@@ -24,6 +24,8 @@ from avlite.c40_execution.c41_execution_model import Executer, WorldBridge
 from avlite.c40_execution.c43_sync_executer import SyncExecuter
 from avlite.c40_execution.c44_async_threaded_executer import AsyncThreadedExecuter
 from avlite.c40_execution.c46_basic_sim import BasicSim
+from avlite.c40_execution.c47_carla_bridge import CarlaBridge
+
 
 
 log = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ def executor_factory(
     if load_extensions:
         import_all_modules() # loading default extensions
         # loading community extensions
-        for k,v in ExecutionSettings.community_extensions.items():
+        for k,v in ExecutionSettings.community_plugins.items():
             log.warning(f"Loading external extension: {k} from {v}")
             import_all_modules(v, pkg_name = k)
 
@@ -178,6 +180,7 @@ def executor_factory(
     #################
     # Creating Executer
     #################
+    executer = None
     try:
         if executer_type in Executer.registry:
             cls = Executer.registry[executer_type]
@@ -192,6 +195,16 @@ def executor_factory(
                            perception_dt=perception_dt, replan_dt=replan_dt, control_dt=control_dt,
                            localization_dt=localization_dt)
     except Exception as e:
-        log.error(f"Error loading exectuter {e}")
+        log.error(f"Error loading executer '{executer_type}': {e}", exc_info=True)
+        try:
+            executer = SyncExecuter(perception_model=pm,perception=pr, global_planner=gp, local_planner=pl,
+                           controller=cn, world=world, localization=loc,
+                           perception_dt=perception_dt, replan_dt=replan_dt, control_dt=control_dt,
+                           localization_dt=localization_dt)
+        except Exception as e2:
+            log.error(f"Fallback SyncExecuter also failed: {e2}", exc_info=True)
+            raise
 
+    if executer is not None:
+        executer._requested_executer_type = executer_type
     return executer

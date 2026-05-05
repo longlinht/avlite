@@ -14,6 +14,7 @@ class ExecutionSettings:
     bridge="BasicSim" # Options: Basic, Carla, Gazebo, ROS
     perception = ""
     localization = ""
+    mapping = ""
     global_planner = RaceGlobalPlanner.__name__
     local_planner = GreedyLatticePlanner.__name__
     controller = StanleyController.__name__
@@ -37,4 +38,8 @@ class ExecutionSettings:
     basic_sim_default_trajectory = "data/yas_marina_real_race_line_mue_0_5_3_m_margin.json"
     basic_sim_npc_speed_factor = 0.8   
     basic_sim_npc_control = True  # If True, NPCs will follow the default trajectory at the above speed factor
+
+    log_level = "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+    log_to_file = False
+
 
