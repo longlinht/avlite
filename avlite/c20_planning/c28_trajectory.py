@@ -98,6 +98,31 @@ class Trajectory:
             cumulative_distances.append(cumulative_distances[i - 1] + np.linalg.norm(reference_path[i] - reference_path[i - 1]))
         return cumulative_distances
 
+    def __is_closed_loop(self) -> bool:
+        return (
+            len(self.__reference_path) > 2
+            and np.linalg.norm(self.__reference_path[0] - self.__reference_path[-1]) < 1e-6
+        )
+
+    def __segment_distance(self, point, prev_wp: int, next_wp: int) -> tuple[float, float]:
+        start = self.__reference_path[prev_wp]
+        end = self.__reference_path[next_wp]
+        point_arr = np.array(point)
+        segment = end - start
+        segment_len_sq = float(np.dot(segment, segment))
+        if segment_len_sq <= 1e-12:
+            return float(np.linalg.norm(point_arr - start)), 0.0
+        ratio = max(0.0, min(1.0, float(np.dot(point_arr - start, segment) / segment_len_sq)))
+        projection = start + ratio * segment
+        return float(np.linalg.norm(point_arr - projection)), ratio
+
+    def __use_closing_segment(self, point, closest_wp: int) -> bool:
+        if closest_wp != 0 or not self.__is_closed_loop():
+            return False
+        closing_dist, closing_ratio = self.__segment_distance(point, len(self.__reference_path) - 2, len(self.__reference_path) - 1)
+        forward_dist, _ = self.__segment_distance(point, 0, 1)
+        return closing_ratio < 1.0 - 1e-6 and closing_dist + 1e-6 < forward_dist
+
 
     
     def get_current_xy(self) -> tuple[float, float]:
@@ -180,11 +205,13 @@ class Trajectory:
         dists = np.sqrt(diffs[:, 0] ** 2 + diffs[:, 1] ** 2)
         closest_wp = int(np.argmin(dists))
         s_, d_ = self.convert_xy_path_to_sd_path([(x_current, y_current)])
+        if closest_wp == 0 and self.__is_closed_loop() and s_[0] > self.path_s[1]:
+            closest_wp = int(self.get_closest_waypoint_frm_sd(s_[0], d_[0]))
 
         if self.path_s[closest_wp] <= s_[0]:
             if closest_wp < len(self.__reference_path) - 1:
                 self.current_wp = closest_wp
-                self.next_wp = closest_wp + 1 % len(self.__reference_path)
+                self.next_wp = (closest_wp + 1) % len(self.__reference_path)
             elif closest_wp == len(self.__reference_path) - 1:
                 self.current_wp = closest_wp
                 self.next_wp = closest_wp
@@ -194,7 +221,7 @@ class Trajectory:
 
     def update_waypoint_by_wp(self, current_wp: int) -> None:
         self.current_wp = current_wp % len(self.__reference_path)
-        self.next_wp = current_wp + 1 % len(self.__reference_path)
+        self.next_wp = (current_wp + 1) % len(self.__reference_path)
 
     def update_to_next_waypoint(self) -> None:
         self.update_waypoint_by_wp(self.current_wp + 1)
@@ -645,8 +672,12 @@ class Trajectory:
             closest_wp = self.get_closest_waypoint_frm_xy(point[0], point[1])
 
             if closest_wp == 0:
-                next_wp = 1
-                prev_wp = 0
+                if self.__use_closing_segment(point, closest_wp):
+                    next_wp = len(reference_path) - 1
+                    prev_wp = next_wp - 1
+                else:
+                    next_wp = 1
+                    prev_wp = 0
             else:
                 next_wp = closest_wp
                 prev_wp = next_wp - 1
@@ -693,8 +724,12 @@ class Trajectory:
             # To avoid returning the last point which is the same as the first
 
             if closest_wp == 0:
-                next_wp = 1
-                prev_wp = 0
+                if self.__use_closing_segment(point, closest_wp):
+                    next_wp = len(reference_path) - 1
+                    prev_wp = next_wp - 1
+                else:
+                    next_wp = 1
+                    prev_wp = 0
             else:
                 next_wp = closest_wp
                 prev_wp = next_wp - 1
