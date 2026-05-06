@@ -5,7 +5,7 @@ import time
 from avlite.c10_perception.c12_perception_strategy import PerceptionModel
 from avlite.c10_perception.c11_perception_model import EgoState
 from avlite.c20_planning.c27_lattice import Edge, Lattice
-from avlite.c20_planning.c28_trajectory import Trajectory, convert_sd_path_to_xy_path
+from avlite.c60_common.c63_trajectory_tracker import TrajectoryTracker, convert_sd_path_to_xy_path
 from avlite.c20_planning.c21_planning_model import GlobalPlan
 
 import logging
@@ -19,7 +19,7 @@ class LocalPlannerStrategy(ABC):
         """Initialize the local planner with a global plan and perception model."""
         self.global_plan: GlobalPlan = global_plan
         self.pm: PerceptionModel = pm
-        self.global_trajectory: Trajectory = global_plan.trajectory
+        self.global_trajectory: TrajectoryTracker = global_plan.trajectory
         self.traversed_x: list[float]
         self.traversed_y: list[float]
         self.traversed_d: list[float]
@@ -146,7 +146,7 @@ class LocalPlannerStrategy(ABC):
     def replan(self):
         pass
 
-    def get_local_plan(self) -> Trajectory:
+    def get_local_plan(self) -> TrajectoryTracker:
         return self.selected_local_plan.local_trajectory if self.selected_local_plan is not None else self.global_trajectory
 
     def step_wp(self):
@@ -232,12 +232,21 @@ class LocalPlannerStrategy(ABC):
                 log.info("Local plan traversed, no next local plan selected. I'll follow the global trajectory")
                 self.selected_local_plan = None
 
-        if self.global_trajectory.is_traversed():
-            self.lap += 1
-            log.info(f"Lap {self.lap} Done")
-
         #### Frenet Coordinates
         s_, d_ = self.global_trajectory.convert_xy_to_sd(state.x, state.y)
+
+        # Lap detection via S-coordinate crossover.
+        # global_trajectory.is_traversed() relies on current_wp reaching the last index,
+        # which is unreliable when the ego is laterally displaced on a local plan and the
+        # closest global waypoint jumps directly from near-end to near-start.
+        # Instead, compare the previous S value to the new one: if we were near the end of
+        # the track (s > 80%) and are now near the start (s < 20%), a lap has been completed.
+        if self.global_plan.race_mode and len(self.traversed_s) > 0:
+            track_len = self.global_trajectory.path_s[-2]
+            if track_len > 0 and self.traversed_s[-1] > track_len * 0.8 and s_ < track_len * 0.05:
+                self.lap += 1
+                log.info(f"Lap {self.lap} Done")
+
         self.traversed_d.append(d_)
         self.traversed_s.append(s_)
         self.location_xy = (state.x, state.y)

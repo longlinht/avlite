@@ -28,7 +28,8 @@ from std_msgs.msg import String
 from avlite.c40_execution.c41_execution_model import Executer
 from avlite.c40_execution.c49_settings import ExecutionSettings
 from avlite.c10_perception.c11_perception_model import EgoState, AgentState
-from avlite.c20_planning.c28_trajectory import Trajectory
+from avlite.c60_common.c63_trajectory_tracker import TrajectoryTracker
+from avlite.c60_common.c61_setting_utils import load_setting
 from avlite.c30_control.c31_control_model import ControlComand
 
 from .settings import ExtensionSettings
@@ -56,7 +57,7 @@ class ROSData:
     
     # Latest received data
     ego_state: Optional[EgoState] = None
-    local_plan: Optional[Trajectory] = None
+    local_plan: Optional[TrajectoryTracker] = None
     control_cmd: Optional[ControlComand] = None
     agents: list[AgentState] = field(default_factory=list)
     
@@ -227,7 +228,7 @@ class CollectorNode(Node):
             with self.ros_data.lock:
                 path = [(p['x'], p['y']) for p in data.get('points', [])]
                 velocity = [p.get('velocity', 0) for p in data.get('points', [])]
-                self.ros_data.local_plan = Trajectory(path=path, velocity=velocity)
+                self.ros_data.local_plan = TrajectoryTracker(path=path, velocity=velocity)
                 self.ros_data.local_plan.name = "ROS Trajectory"
                 self.ros_data.plan_stamp = time.time()
         except json.JSONDecodeError as e:
@@ -298,7 +299,8 @@ class ROSExecuter(Executer):
         super().__init__(*args, **kwargs)
         
         self.settings = ExtensionSettings()
-        
+        load_setting(ExtensionSettings)
+
         # Override timing from settings
         self.perception_dt = self.settings.perception_dt
         self.replan_dt = self.settings.replan_dt
@@ -319,8 +321,26 @@ class ROSExecuter(Executer):
         
         # Timing tracking
         self._start_real_time: float = 0.0
+        self._planner_last_real_time: float = 0.0  # real-time gate for replan throttling
         
         log.info("ROSExecuter initialized")
+
+    def teleport_ego(self, x: float, y: float, theta: Optional[float] = None) -> None:
+        """Teleport the ego vehicle and immediately flush ros_data to prevent revert.
+
+        Without this override, _sync_ros_to_avlite() would overwrite the teleported
+        position with the stale pre-teleport value still sitting in ros_data (which
+        lags one ROS round-trip behind the world state).
+        """
+        self.world.teleport_ego(x, y, theta)
+        with self.ros_data.lock:
+            if self.ros_data.ego_state is None:
+                self.ros_data.ego_state = EgoState(x=x, y=y, theta=theta or 0.0)
+            else:
+                self.ros_data.ego_state.x = x
+                self.ros_data.ego_state.y = y
+                if theta is not None:
+                    self.ros_data.ego_state.theta = theta
 
     def step(
         self,
@@ -351,31 +371,17 @@ class ROSExecuter(Executer):
         # Run localization strategy (before perception)
         if call_localize and self.localization:
             try:
-                if self.localization.requirements.issubset(self.world.capabilities):
-                    self.localization.localize(
-                        lidar=self.world.get_lidar_data() if ExecutionSettings.provide_lidar else None,
-                        rgb_img=self.world.get_rgb_image() if ExecutionSettings.provide_rgb else None,
-                    )
+                self._localization_step()
             except Exception as e:
                 log.debug(f"Localization step error: {e}")
 
         # Run perception strategy to populate occupancy_flow, etc.
         if call_perceive and self.perception:
             try:
-                if self.perception.requirements.issubset(self.world.capabilities):
-                    if ExecutionSettings.provide_ground_truth:
-                        self.pm = self.world.get_ground_truth_perception_model()
-                    else:
-                        self.pm.agent_vehicles = []
-                    self.perception.perceive(
-                        perception_model=self.pm,
-                        rgb_img=self.world.get_rgb_image() if ExecutionSettings.provide_rgb else None,
-                        depth_img=self.world.get_depth_image(),
-                        lidar_data=self.world.get_lidar_data() if ExecutionSettings.provide_lidar else None,
-                    )
-                    # Update perception node's reference to pm
-                    if self.perception_node:
-                        self.perception_node.pm = self.pm
+                self._perception_step()
+                # Update perception node's reference to pm
+                if self.perception_node:
+                    self.perception_node.pm = self.pm
             except Exception as e:
                 log.debug(f"Perception step error: {e}")
         
@@ -392,8 +398,10 @@ class ROSExecuter(Executer):
         if self.local_planner:
             self.local_planner.step(self.ego_state)
         
-        # Run planner (replan if needed)
-        if call_replan and self.local_planner:
+        # Run planner (replan if needed) — throttled by replan_dt to match SyncExecuter behavior
+        now = time.time()
+        if call_replan and self.local_planner and (now - self._planner_last_real_time) >= replan_dt:
+            self._planner_last_real_time = now
             self.local_planner.replan()
         
         # Run controller and apply to world
@@ -414,70 +422,88 @@ class ROSExecuter(Executer):
             self.elapsed_sim_time = self.ros_data.elapsed_sim_time
 
     def _start_ros(self):
-        """Initialize and start ROS components including world/perception/planner/controller nodes."""
+        """Initialize and start ROS components including world/perception/planner/controller nodes.
+
+        When the world bridge owns its own ROS topics (e.g. ROS2WorldBridge), we skip the
+        internal WorldNode, PerceptionNode, and ControllerNode to avoid duplicate publishers
+        and feedback loops on the shared localization / perception / control topics.
+        """
         if self.ros_started:
             return
-            
+
+        # Detect whether the world bridge manages its own ROS topics.
+        # ROS2WorldBridge (and any future external bridge) sets owns_ros_topics = True.
+        bridge_owns = getattr(self.world, "owns_ros_topics", False)
+
         # Initialize ROS
         if not rclpy.ok():
             rclpy.init()
-        
+
         # Import node classes
         from .e42_perception_node import PerceptionNode
         from .e43_planner_node import PlannerNode
         from .e44_controller_node import ControllerNode
         from .e45_world_node import WorldNode
-        
-        # Create collector node (subscribes to external topics)
+
+        # Create collector node (subscribes to external topics for visualizer sync)
         self.collector_node = CollectorNode(self.ros_data, self.settings)
-        
-        # Create world node (runs simulation step asynchronously)
-        self.world_node = WorldNode(
-            world=self.world, 
-            ros_data=self.ros_data,
-            sim_dt=self.settings.sim_dt
-        )
-        
-        # Create perception node (publishes ego state and tracked objects)
-        self.perception_node = PerceptionNode(
-            ego_state=self.ego_state,
-            perception_model=self.pm,
-            world=self.world,
-            ros_data=self.ros_data,
-            perception_dt=self.settings.perception_dt
-        )
-        
-        # Create planner node (publishes trajectory)
+
+        self.ros_exec = SingleThreadedExecutor()
+        self.ros_exec.add_node(self.collector_node)
+
+        if not bridge_owns:
+            # Create world node (runs simulation step asynchronously)
+            self.world_node = WorldNode(
+                world=self.world,
+                ros_data=self.ros_data,
+                sim_dt=self.settings.sim_dt,
+            )
+            # Create perception node (publishes ego state and tracked objects)
+            self.perception_node = PerceptionNode(
+                ego_state=self.ego_state,
+                perception_model=self.pm,
+                world=self.world,
+                ros_data=self.ros_data,
+                perception_dt=self.settings.perception_dt,
+            )
+            # Create controller node (publishes control commands)
+            self.controller_node = ControllerNode(
+                controller=self.controller,
+                ego_state=self.ego_state,
+                ros_data=self.ros_data,
+                control_dt=self.settings.control_dt,
+            )
+            self.ros_exec.add_node(self.world_node)
+            self.ros_exec.add_node(self.perception_node)
+            self.ros_exec.add_node(self.controller_node)
+        else:
+            log.info(
+                "World bridge owns ROS topics – skipping WorldNode, PerceptionNode, ControllerNode"
+            )
+
+        # Create planner node (publishes trajectory; always active)
         self.planner_node = PlannerNode(
             planner=self.local_planner,
             ego_state=self.ego_state,
             ros_data=self.ros_data,
-            replan_dt=self.settings.replan_dt
+            replan_dt=self.settings.replan_dt,
         )
-        
-        # Create controller node (publishes control commands)
-        self.controller_node = ControllerNode(
-            controller=self.controller,
-            ego_state=self.ego_state,
-            ros_data=self.ros_data,
-            control_dt=self.settings.control_dt
-        )
-        
-        # Create executor and add all nodes
-        self.ros_exec = SingleThreadedExecutor()
-        self.ros_exec.add_node(self.collector_node)
-        self.ros_exec.add_node(self.world_node)
-        self.ros_exec.add_node(self.perception_node)
         self.ros_exec.add_node(self.planner_node)
-        self.ros_exec.add_node(self.controller_node)
-        
+
         # Start spinning in separate thread
         self.spin_thread = threading.Thread(target=self._spin_ros, daemon=True)
         self.spin_thread.start()
-        
+
         self.ros_started = True
-        log.info("ROS infrastructure started with world, planner and controller nodes")
-        log.info(f"  Timing: sim_dt={self.settings.sim_dt}, perception_dt={self.settings.perception_dt}, replan_dt={self.settings.replan_dt}, control_dt={self.settings.control_dt}")
+        log.info(
+            "ROS infrastructure started (bridge_owns=%s) – "
+            "sim_dt=%s  perception_dt=%s  replan_dt=%s  control_dt=%s",
+            bridge_owns,
+            self.settings.sim_dt,
+            self.settings.perception_dt,
+            self.settings.replan_dt,
+            self.settings.control_dt,
+        )
 
     def _spin_ros(self):
         """Spin ROS executor in background thread."""

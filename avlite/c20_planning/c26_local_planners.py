@@ -9,7 +9,7 @@ import numpy as np
 import logging
 
 if TYPE_CHECKING:
-    from c20_planning.c28_trajectory import Trajectory
+    from avlite.c60_common.c63_trajectory_tracker import TrajectoryTracker
 
 log = logging.getLogger(__name__)
 
@@ -205,6 +205,5 @@ class GreedyLatticePlanner(LocalPlannerStrategy):
             if self.selected_local_plan is not None:
                 tj = self.selected_local_plan.local_trajectory
                 tj.velocity = np.zeros(len(tj.path))
-
 
 

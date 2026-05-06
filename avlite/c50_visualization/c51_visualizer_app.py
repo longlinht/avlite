@@ -1,6 +1,6 @@
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 import logging
 
@@ -90,6 +90,7 @@ class VisualizerApp(tk.Tk):
         self.bind("<Configure>", self.__update_grid_column_sizes)
         self.after(500, self.update_ui)
         self.last_resize_time = time.time()
+        self._create_menubar()
         self.ui_initialized = True
         
         log.info(f"Available profiles: {self.setting.profile_list}")
@@ -268,7 +269,7 @@ class VisualizerApp(tk.Tk):
             self.config_shortcut_view.help_text.config(bg="gray14", fg="white", highlightbackground="black")
     
         if hasattr(self, 'menubar'):
-            bg = "#333333"; fg = "white"; activebg = "#555555"; activefg = "white"
+            bg = "#333333"; fg = "#bbbbbb"; activebg = "#555555"; activefg = "#bbbbbb"
             self.menubar.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=activefg)
             for menu in getattr(self, "menus", []):
                 menu.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=activefg)
@@ -278,6 +279,7 @@ class VisualizerApp(tk.Tk):
             style = ThemedStyle(self)
             style.set_theme("equilux")
             style.configure("Big.TLabel", font=("Arial", 16, "bold"))
+            style.configure("TLabelframe.Label", font=("Arial", 11, "bold"))
             gruvbox_red = "#9d0006"
             gruvbox_orange = "#d65d0e"
 
@@ -365,6 +367,71 @@ class VisualizerApp(tk.Tk):
         self.option_add('*Listbox.borderWidth', 2)
        
         style.configure("Big.TLabel", font=("Arial", 16, "bold"))
+        style.configure("TLabelframe.Label", font=("Arial", 10, "bold"))
+
+    def _create_menubar(self):
+        self.menubar = tk.Menu(self)
+        self.menus = []
+
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        file_menu.add_command(label="Settings", command=self.config_shortcut_view.open_settings_window)
+        file_menu.add_command(label="Community Plugins", command=self.config_shortcut_view.open_plugins_window)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit)
+        self.menubar.add_cascade(label="File", menu=file_menu)
+        self.menus.append(file_menu)
+
+        help_menu = tk.Menu(self.menubar, tearoff=0)
+        help_menu.add_command(label="About AVLite", command=self._show_about)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
+        self.menus.append(help_menu)
+
+        # Apply current theme colours
+        if self.setting.dark_mode.get():
+            bg, fg, activebg, activefg = "#333333", "#bbbbbb", "#555555", "#bbbbbb"
+        else:
+            bg, fg, activebg, activefg = "white", "black", "#ececec", "black"
+        self.menubar.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=activefg)
+        for menu in self.menus:
+            menu.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=activefg)
+
+        self._apply_menubar_visibility()
+        self.setting.hide_menubar.trace_add("write", lambda *_: self._apply_menubar_visibility())
+
+    def _show_about(self):
+        win = tk.Toplevel(self)
+        win.title("About AVLite")
+        win.resizable(False, False)
+        win.configure(bg="black")
+
+        inner = tk.Frame(win, bg="black", padx=40, pady=0)
+        inner.pack(fill="both", expand=True)
+
+        try:
+            from PIL import Image, ImageTk
+            logo_img = Image.open("data/imgs/logo.png")
+            logo_img = logo_img.resize((200, 200), Image.LANCZOS)
+            win._logo_photo = ImageTk.PhotoImage(logo_img)
+            tk.Label(inner, image=win._logo_photo, bg="black").pack(pady=(24, 8))
+        except Exception:
+            log.warning("Failed to load logo for About dialog.")
+
+        tk.Label(inner, text="AVLite", fg="#10bfe8", bg="black",
+                 font=("Arial", 16, "bold")).pack()
+        tk.Label(inner, text="Version 0.1.0", fg="#10bfe8", bg="black",
+                 font=("Arial", 11)).pack(pady=(4, 0))
+        tk.Label(inner, text="A lightweight autonomous driving software stack.",
+                 fg="#10bfe8", bg="black", font=("Arial", 10)).pack(pady=(6, 24))
+
+        ttk.Button(inner, text="OK", command=win.destroy).pack(pady=(0, 20))
+        win.grab_set()
+        win.focus_set()
+
+    def _apply_menubar_visibility(self):
+        if self.setting.hide_menubar.get():
+            self.config(menu="")
+        else:
+            self.config(menu=self.menubar)
 
     def set_set_light_mode_darker(self):
         self.configure(bg="gray14")
@@ -401,6 +468,7 @@ class VisualizerApp(tk.Tk):
             self.setting.elapsed_sim_time.set(f"{self.exec.elapsed_sim_time:6.2f}")
             self.setting.replan_fps.set(f"{self.exec.planner_fps:6.1f}")
             self.setting.control_fps.set(f"{self.exec.control_fps:6.1f}")
+            self.setting.perception_fps.set(f"{self.exec.perception_fps:6.1f}")
             self.setting.lap.set(f"{self.exec.local_planner.lap:5d}")
 
 
@@ -470,10 +538,10 @@ class VisualizerApp(tk.Tk):
         self.local_plan_plot_view.reset()
         self.global_plan_plot_view.reset()
         self.perceive_plan_control_view.reset()
-        self.exec_visualize_view.bridge_frame.update_for_bridge(self.exec.world.capabilities)
         self.update_views()
         self.update_ui()
         self.enable_frame(self)
+        self.exec_visualize_view.bridge_frame.update_for_bridge(self.exec.world.capabilities)
         self.focus_set()  # unfocus any entry fields including widgets. Useful to avoid typing shortcut keys 
         self.hide_loading_overlay()
             
