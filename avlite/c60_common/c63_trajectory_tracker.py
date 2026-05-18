@@ -52,11 +52,20 @@ class TrajectoryTracker:
         self.path_y = self.__reference_path[:, 1]
         self.__cumulative_distances = self.__precompute_cumulative_distances()
 
-        # Build KD-tree over the XY reference path for O(log n) nearest-waypoint queries.
-        # Must be built before convert_xy_path_to_sd_path, which calls get_closest_waypoint_frm_xy.
-        self.__xy_kdtree = KDTree(self.__reference_path)
+        # Build KD-tree over unique XY points. Closed-loop tracks often duplicate
+        # the start point as the final waypoint; including that duplicate lets a
+        # start pose resolve to the lap-end waypoint and breaks progress tracking.
+        kdtree_path = self.__reference_path[:-1] if self.__is_closed_loop() else self.__reference_path
+        self.__xy_kdtree = KDTree(kdtree_path)
 
         self.path_s, self.path_d = self.convert_xy_path_to_sd_path(self.__reference_path)
+        if self.__is_closed_loop() and len(self.path_s) == len(self.__cumulative_distances):
+            # The final waypoint duplicates the start pose, but it still
+            # represents the lap end for SD lookups and progress checks.
+            self.path_s = list(self.path_s)
+            self.path_d = list(self.path_d)
+            self.path_s[-1] = float(self.__cumulative_distances[-1])
+            self.path_d[-1] = 0.0
 
         # this should be with respect to parent trajectory
         self.__reference_sd_path = np.array(list(zip(self.path_s, self.path_d)))
@@ -125,6 +134,46 @@ class TrajectoryTracker:
         ratio = max(0.0, min(1.0, float(np.dot(point_arr - start, segment) / segment_len_sq)))
         projection = start + ratio * segment
         return float(np.linalg.norm(point_arr - projection)), ratio
+
+    def __candidate_segments_for_waypoint(self, closest_wp: int) -> list[tuple[int, int]]:
+        n = len(self.__reference_path)
+        if n < 2:
+            return []
+
+        candidates: list[tuple[int, int]] = []
+        for prev_wp in range(closest_wp - 2, closest_wp + 3):
+            next_wp = prev_wp + 1
+            if 0 <= prev_wp < n - 1 and 0 <= next_wp < n:
+                candidates.append((prev_wp, next_wp))
+        if self.__is_closed_loop() and closest_wp <= 1:
+            candidates.append((n - 2, n - 1))
+
+        unique_candidates = []
+        seen = set()
+        for segment in candidates:
+            if segment not in seen:
+                unique_candidates.append(segment)
+                seen.add(segment)
+        return unique_candidates
+
+    def __project_point_to_segment(self, point, prev_wp: int, next_wp: int) -> tuple[float, float, float]:
+        start = self.__reference_path[prev_wp]
+        end = self.__reference_path[next_wp]
+        point_arr = np.array(point)
+        segment = end - start
+        segment_len_sq = float(np.dot(segment, segment))
+        if segment_len_sq <= 1e-12:
+            dist_vec = point_arr - start
+            return float(np.dot(dist_vec, dist_vec)), self.__cumulative_distances[prev_wp], 0.0
+
+        ratio = max(0.0, min(1.0, float(np.dot(point_arr - start, segment) / segment_len_sq)))
+        projection = start + ratio * segment
+        dist_vec = point_arr - projection
+        segment_len = math.sqrt(segment_len_sq)
+        normal = np.array([-segment[1], segment[0]])
+        d = float(np.dot(dist_vec, normal) / segment_len)
+        s = float(self.__cumulative_distances[prev_wp] + ratio * segment_len)
+        return float(np.dot(dist_vec, dist_vec)), s, d
 
     def __use_closing_segment(self, point, closest_wp: int) -> bool:
         if closest_wp != 0 or not self.__is_closed_loop():
@@ -671,48 +720,19 @@ class TrajectoryTracker:
         points_array = np.asarray(points)                       # shape (m, 2)
         _, closest_wps = self.__xy_kdtree.query(points_array)   # shape (m,) — O(m log n)
 
-        reference_path = self.__reference_path
         frenet_coords = []
-        cumulative_distances = self.__cumulative_distances
         for idx, point in enumerate(points_array):
 
             closest_wp = closest_wps[idx]
+            candidates = self.__candidate_segments_for_waypoint(int(closest_wp))
+            if not candidates:
+                frenet_coords.append((0.0, 0.0))
+                continue
 
-            if closest_wp == 0:
-                if self.__use_closing_segment(point, closest_wp):
-                    next_wp = len(reference_path) - 1
-                    prev_wp = next_wp - 1
-                else:
-                    next_wp = 1
-                    prev_wp = 0
-            else:
-                next_wp = closest_wp
-                prev_wp = next_wp - 1
-
-            n_x = reference_path[next_wp, 0] - reference_path[prev_wp, 0]
-            n_y = reference_path[next_wp, 1] - reference_path[prev_wp, 1]
-            x_x = point[0] - reference_path[prev_wp, 0]
-            x_y = point[1] - reference_path[prev_wp, 1]
-
-            # Compute the projection of the point onto the reference path
-            if (n_x * n_x + n_y * n_y) == 0:
-                proj_x = 0
-                proj_y = 0
-            else:
-                proj_norm = (x_x * n_x + x_y * n_y) / (n_x * n_x + n_y * n_y)  # normalized projection
-                proj_x = proj_norm * n_x
-                proj_y = proj_norm * n_y
-
-            # Compute the Frenet s coordinate based on the longitudinal position along the reference path
-            s = cumulative_distances[prev_wp] + np.sqrt(proj_x**2 + proj_y**2)
-            # Compute the Frenet d coordinate based on the lateral distance from the reference path
-            # The sign of the d coordinate is determined by the cross product of the vectors to the point and along the reference path
-            # d = -np.sign(x_x * n_y - x_y * n_x) * np.sqrt((x_x - proj_x) ** 2 + (x_y - proj_y) ** 2)
-
-            normal = np.array([-n_y, n_x])  # Rotate tangent vector by 90 degrees (left-hand normal)
-            vec_to_point = np.array([x_x - proj_x, x_y - proj_y])
-            d = np.dot(vec_to_point, normal) / np.linalg.norm(normal)
-
+            _, s, d = min(
+                (self.__project_point_to_segment(point, prev_wp, next_wp) for prev_wp, next_wp in candidates),
+                key=lambda value: value[0],
+            )
             frenet_coords.append((s, d))
 
         return zip(*frenet_coords)
@@ -726,46 +746,18 @@ class TrajectoryTracker:
         points_array = np.asarray(points)                       # shape (m, 2)
         _, closest_wps = self.__xy_kdtree.query(points_array)  # shape (m,) — O(m log n)
 
-        reference_path = self.__reference_path
-        cumulative_distances = self.__cumulative_distances
         frenet_coords = []
         for idx, point in enumerate(points_array):
             closest_wp = closest_wps[idx]
+            candidates = self.__candidate_segments_for_waypoint(int(closest_wp))
+            if not candidates:
+                frenet_coords.append((0.0, 0.0))
+                continue
 
-            if closest_wp == 0:
-                if self.__use_closing_segment(point, closest_wp):
-                    next_wp = len(reference_path) - 1
-                    prev_wp = next_wp - 1
-                else:
-                    next_wp = 1
-                    prev_wp = 0
-            else:
-                next_wp = closest_wp
-                prev_wp = next_wp - 1
-
-            n_x = reference_path[next_wp, 0] - reference_path[prev_wp, 0]
-            n_y = reference_path[next_wp, 1] - reference_path[prev_wp, 1]
-            x_x = point[0] - reference_path[prev_wp, 0]
-            x_y = point[1] - reference_path[prev_wp, 1]
-
-            # Compute the projection of the point onto the reference path
-            if (n_x * n_x + n_y * n_y) == 0:
-                proj_x = 0
-                proj_y = 0
-            else:
-                proj_norm = (x_x * n_x + x_y * n_y) / (n_x * n_x + n_y * n_y)  # normalized projection
-                proj_x = proj_norm * n_x
-                proj_y = proj_norm * n_y
-
-
-            s = cumulative_distances[prev_wp] + np.sqrt(proj_x**2 + proj_y**2)
-
-            # The sign of the d coordinate is determined by the cross product of the vectors to the point and along the reference path
-            # d = -np.sign(x_x * n_y - x_y * n_x) * np.sqrt((x_x - proj_x) ** 2 + (x_y - proj_y) ** 2)
-            normal = np.array([-n_y, n_x])  # Left-hand normal
-            vec_to_point = np.array([x_x - proj_x, x_y - proj_y])
-            d = np.dot(vec_to_point, normal) / np.linalg.norm(normal)
-
+            _, s, d = min(
+                (self.__project_point_to_segment(point, prev_wp, next_wp) for prev_wp, next_wp in candidates),
+                key=lambda value: value[0],
+            )
             frenet_coords.append((s, d))
 
         return np.array(frenet_coords)

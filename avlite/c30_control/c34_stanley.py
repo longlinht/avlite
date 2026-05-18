@@ -11,11 +11,10 @@ from avlite.c30_control.c39_settings import ControlSettings
 log = logging.getLogger(__name__)
 
 class StanleyController(ControlStrategy):
-    def __init__(self, tj:Optional[TrajectoryTracker]=None, k=ControlSettings.stanley_k, k_soft = ControlSettings.stanley_k_soft,
-                 lookahead=ControlSettings.stanley_lookahead, valpha=ControlSettings.stanley_valpha, vbeta=ControlSettings.stanley_vbeta,
-                 vgamma=ControlSettings.stanley_vgamma, slow_down_cte=ControlSettings.stanley_slow_down_cte, 
-                 slow_down_heading_cte = ControlSettings.stanley_slow_down_heading_cte,
-                 slow_down_vel_threshold=ControlSettings.stanley_slow_down_vel_threshold):
+    def __init__(self, tj:Optional[TrajectoryTracker]=None, k=None, k_soft=None,
+                 lookahead=None, heading_lookahead=None, valpha=None, vbeta=None,
+                 vgamma=None, slow_down_cte=None, slow_down_heading_cte=None,
+                 slow_down_vel_threshold=None):
         """
         Stanley Controller for trajectory following. The controller also slows down the vehicle if steer CTE is > 0.5
         :param tj: Trajectory to follow.
@@ -27,20 +26,59 @@ class StanleyController(ControlStrategy):
         :param slow_down_vel_threshold: Threshold for slowing down based on steering CTE.
         """
         super().__init__(tj)
-        self.lookahead = lookahead
-        self.k = k
-        self.k_soft = k_soft
+        # Resolve settings at construction time. Binding ControlSettings values in
+        # the function signature freezes defaults before YAML profiles are loaded.
+        self.lookahead = ControlSettings.stanley_lookahead if lookahead is None else lookahead
+        configured_heading_lookahead = getattr(ControlSettings, "stanley_heading_lookahead", self.lookahead)
+        self.heading_lookahead = configured_heading_lookahead if heading_lookahead is None else heading_lookahead
+        self.k = ControlSettings.stanley_k if k is None else k
+        self.k_soft = ControlSettings.stanley_k_soft if k_soft is None else k_soft
         self.cte_steer = 0
-        self.slow_down_cte = slow_down_cte  # threshold for slowing down based on steering CTE
-        self.slow_down_heading_cte = slow_down_heading_cte
-        self.slow_down_vel_threshold = slow_down_vel_threshold # threshold for slowing down based on steering CTE
+        self.slow_down_cte = ControlSettings.stanley_slow_down_cte if slow_down_cte is None else slow_down_cte
+        self.slow_down_heading_cte = (
+            ControlSettings.stanley_slow_down_heading_cte
+            if slow_down_heading_cte is None
+            else slow_down_heading_cte
+        )
+        self.slow_down_vel_threshold = (
+            ControlSettings.stanley_slow_down_vel_threshold
+            if slow_down_vel_threshold is None
+            else slow_down_vel_threshold
+        )
         
-        self.valpha, self.vbeta, self.vgamma = valpha, vbeta, vgamma
+        self.valpha = ControlSettings.stanley_valpha if valpha is None else valpha
+        self.vbeta = ControlSettings.stanley_vbeta if vbeta is None else vbeta
+        self.vgamma = ControlSettings.stanley_vgamma if vgamma is None else vgamma
         self.cte_v_sum = 0
         self.cte_velocity = 0
         self.previous_cte_velocity = 0  # For D-term calculation
         self.previous_heading = None
 
+    @staticmethod
+    def _is_closed_loop(tj: TrajectoryTracker) -> bool:
+        return (
+            tj.is_initialized
+            and len(tj.path_x) > 2
+            and np.hypot(tj.path_x[0] - tj.path_x[-1], tj.path_y[0] - tj.path_y[-1]) < 1e-6
+        )
+
+    def _heading_at_s(self, tj: TrajectoryTracker, s: float) -> float:
+        if not tj or not tj.is_initialized or len(tj.path_s) == 0:
+            raise ValueError("TrajectoryTracker not initialized")
+
+        path_s = np.asarray(tj.path_s, dtype=float)
+        target_s = float(s)
+        start_s = float(path_s[0])
+        end_s = float(path_s[-1])
+        if end_s > start_s:
+            if self._is_closed_loop(tj):
+                lap_length = end_s - start_s
+                target_s = start_s + ((target_s - start_s) % lap_length)
+            else:
+                target_s = float(np.clip(target_s, start_s, end_s))
+
+        wp = tj.get_closest_waypoint_frm_sd(target_s, 0.0)
+        return float(tj.path_heading[wp])
 
     def control(self, ego: EgoState, tj: Optional[TrajectoryTracker]=None, control_dt = None) -> ControlComand:
         if tj is not None:
@@ -49,20 +87,29 @@ class StanleyController(ControlStrategy):
             log.warning("Trajectory is not provided. Steering and acceleration set to zero. Please provide a trajectory.")
             return ControlComand(steer=0, acceleration=0)
 
+        heading_target_s = None
+        target_heading = None
+
         # to deal with fast replanning, need to have a lookahead to the next trajectory
         if self.tj.parent_trajectory is not None:  
             parent = self.tj.parent_trajectory
             sp, dp =  parent.convert_xy_to_sd(ego.x, ego.y)
-            sp = sp + self.lookahead
-            x, y =  parent.convert_sd_to_xy(sp, dp)
+            cte_parent_s = sp + self.lookahead
+            x, y =  parent.convert_sd_to_xy(cte_parent_s, dp)
             s, cte = self.tj.convert_xy_to_sd(x, y)
             s_, cte_ = self.tj.convert_xy_to_sd(ego.x, ego.y)
+
+            heading_parent_s = sp + self.heading_lookahead
+            heading_target_s = heading_parent_s
+            target_heading = self._heading_at_s(parent, heading_parent_s)
+
             log.debug(f"CTE with Lookahead: {self.lookahead}, cte: {cte:.2f}, W.O LA cte: {cte_:.2f}")
             # Also update current_wp for local trajectory to get correct target velocity
             self.tj.update_waypoint_by_xy(ego.x, ego.y)
         else:   
             self.tj.update_waypoint_by_xy(ego.x, ego.y)
             s, cte = self.tj.convert_xy_to_sd(ego.x, ego.y)
+            heading_target_s = s + self.heading_lookahead
 
         self.cte_steer = cte
 
@@ -70,8 +117,15 @@ class StanleyController(ControlStrategy):
         # Compute the steering: Stanley
         ##################################
             
-        heading_error = normalize_angle(self.tj.get_current_heading() - ego.theta)
-        log.debug(f"heading error: {heading_error:+6.2f} [tj: {self.tj.get_current_heading():+6.2f}, ego: {ego.theta:+6.2f}]")
+        if target_heading is None:
+            target_heading = self._heading_at_s(self.tj, heading_target_s)
+        current_heading = self.tj.get_current_heading()
+        heading_error = normalize_angle(target_heading - ego.theta)
+        log.debug(
+            f"heading error: {heading_error:+6.2f} "
+            f"[target_s: {heading_target_s:+.2f}, target: {target_heading:+6.2f}, "
+            f"current: {current_heading:+6.2f}, ego: {ego.theta:+6.2f}]"
+        )
         steer1 = heading_error + np.arctan2(self.k * -cte, ego.velocity + self.k_soft)
         log.debug( f"Steer: {steer1:+6.2f} ")
         steer = np.clip(steer1, -ego.max_steering, ego.max_steering)

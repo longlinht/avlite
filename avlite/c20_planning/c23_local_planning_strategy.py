@@ -242,7 +242,7 @@ class LocalPlannerStrategy(ABC):
         # Instead, compare the previous S value to the new one: if we were near the end of
         # the track (s > 80%) and are now near the start (s < 20%), a lap has been completed.
         if self.global_plan.race_mode and len(self.traversed_s) > 0:
-            track_len = self.global_trajectory.path_s[-2]
+            track_len = self.global_trajectory.path_s[-1]
             if track_len > 0 and self.traversed_s[-1] > track_len * 0.8 and s_ < track_len * 0.05:
                 self.lap += 1
                 log.info(f"Lap {self.lap} Done")

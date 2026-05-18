@@ -18,6 +18,7 @@ class ControlSettings:
     stanley_k=5
     stanley_k_soft = 0.01
     stanley_lookahead=5
+    stanley_heading_lookahead=5
     stanley_valpha=0.8
     stanley_vbeta=0.01
     stanley_vgamma=0.3

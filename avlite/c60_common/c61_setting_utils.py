@@ -10,16 +10,26 @@ import tkinter as tk
 
 log = logging.getLogger(__name__)
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_project_path(path: str | os.PathLike) -> Path:
+    """Resolve AVLite-relative paths against the repository root."""
+    path_obj = Path(os.path.expanduser(str(path)))
+    if path_obj.is_absolute():
+        return path_obj
+    return PROJECT_ROOT / path_obj
+
 
 def get_absolute_path(relative_path: str) -> str:
     """Convert a relative path to an absolute path based on the current file location."""
+    absolute_path = resolve_project_path(relative_path)
     if os.path.isabs(relative_path):
-        return relative_path
-    # current_file = os.path.realpath(__file__) if sys.argv[0] == "" else sys.argv[0]
-    # project_dir = Path(current_file).parent.parent
-    project_dir = Path(__file__).resolve().parent.parent.parent
-    log.warning(f"Converting relative path {relative_path} to absolute path based on project dir {str(project_dir/ relative_path)}")
-    return str(project_dir / relative_path)
+        return str(absolute_path)
+    log.warning(
+        f"Converting relative path {relative_path} to absolute path based on project dir {absolute_path}"
+    )
+    return str(absolute_path)
 
 
 def reload_lib(reload_extensions: bool = True, exclude_settings=False, exclude_stack=False) -> None:
@@ -123,10 +133,10 @@ def patch_plugin_settings(cls, name: str, plugin_path: str) -> None:
 
 def save_setting(setting, profile="default") -> None:
     """Save current visualization configuration to a YAML file. """
-    filepath=setting.filepath
+    filepath = resolve_project_path(setting.filepath)
     # first load the current configuration if it exists
-    if os.path.exists(filepath):
-        with open(filepath, 'r') as f:
+    if filepath.exists():
+        with filepath.open('r') as f:
             config = yaml.safe_load(f) or {}
         config[profile] = {}
     else:
@@ -146,10 +156,10 @@ def save_setting(setting, profile="default") -> None:
             config[profile][attr_name] = attr_value
 
     # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
 
     # Save to YAML file
-    with open(filepath, 'w') as f:
+    with filepath.open('w') as f:
         yaml.dump(config, f, default_flow_style=False)
     log.info(f"Visualization configuration saved to {filepath} for profile '{profile}'")
 
@@ -157,9 +167,9 @@ def save_setting(setting, profile="default") -> None:
 
 def load_setting(setting, profile="default") -> None:
     """Load visualization configuration from a YAML file. """
-    filepath=setting.filepath
+    filepath = resolve_project_path(setting.filepath)
     try:
-        with open(filepath, 'r') as f:
+        with filepath.open('r') as f:
             config = yaml.safe_load(f)
 
         if not config:
@@ -199,13 +209,13 @@ def load_setting(setting, profile="default") -> None:
 
 def delete_setting_profile(setting, profile) -> bool:
     """Delete a profile from the configuration file."""
-    filepath = setting.filepath
+    filepath = resolve_project_path(setting.filepath)
     if profile == "default":
         log.warning("Cannot delete the 'default' profile.")
         return False
 
     try:
-        with open(filepath, 'r') as f:
+        with filepath.open('r') as f:
             config = yaml.safe_load(f) or {}
 
         if profile not in config:
@@ -214,7 +224,7 @@ def delete_setting_profile(setting, profile) -> bool:
 
         del config[profile]
 
-        with open(filepath, 'w') as f:
+        with filepath.open('w') as f:
             yaml.dump(config, f, default_flow_style=False)
 
         log.info(f"Profile '{profile}' deleted from {filepath}")
@@ -225,9 +235,9 @@ def delete_setting_profile(setting, profile) -> bool:
 
 def list_profiles(setting) -> list:
     """List all profiles in the configuration file."""
-    filepath = setting.filepath
+    filepath = resolve_project_path(setting.filepath)
     try:
-        with open(filepath, 'r') as f:
+        with filepath.open('r') as f:
             config = yaml.safe_load(f)
         if not config:
             log.warning(f"Empty or invalid configuration file: {filepath}")

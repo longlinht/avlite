@@ -86,7 +86,7 @@ class Lattice:
 
         for l in range(1, self.planning_horizon + 1):
             s1_ = s1_ + maneuver_distance
-            if s1_ > self.global_trajectory.path_s[-2]:  # at -1 path_s is zero
+            if s1_ > self.global_trajectory.path_s[-1]:
                 log.warning("No Replan, reaching the end of lap")
                 return
 
@@ -140,5 +140,4 @@ class Lattice:
         self.level0_edges.clear()
         self.nodes.clear()
         self.edges.clear()
-
 
