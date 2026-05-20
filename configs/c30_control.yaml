@@ -21,6 +21,7 @@ Carla_Town10:
   stanley_valpha: 0.8
   stanley_vbeta: 0.01
   stanley_vgamma: 0.3
+  stanley_v_integral_accel_limit: 2.0
 SAN:
   exclude: []
   filepath: configs/c30_control.yaml
@@ -41,6 +42,7 @@ SAN:
   stanley_valpha: 0.8
   stanley_vbeta: 0.01
   stanley_vgamma: 0.3
+  stanley_v_integral_accel_limit: 2.0
 async:
   emergency_braking_factor: 0.9
   emergency_min_moving_velocity: 1.0
@@ -64,6 +66,7 @@ async:
   stanley_valpha: 0.8
   stanley_vbeta: 0.01
   stanley_vgamma: 0.3
+  stanley_v_integral_accel_limit: 2.0
 default:
   emergency_braking_factor: 0.9
   emergency_min_moving_velocity: 1.0
@@ -87,6 +90,7 @@ default:
   stanley_valpha: 0.8
   stanley_vbeta: 0.01
   stanley_vgamma: 0.3
+  stanley_v_integral_accel_limit: 2.0
 perception exp:
   emergency_braking_factor: 0.9
   emergency_min_moving_velocity: 1.0
@@ -110,6 +114,7 @@ perception exp:
   stanley_valpha: 0.8
   stanley_vbeta: 0.01
   stanley_vgamma: 0.3
+  stanley_v_integral_accel_limit: 2.0
 ros:
   exclude: []
   filepath: configs/c30_control.yaml
@@ -130,3 +135,4 @@ ros:
   stanley_valpha: 0.8
   stanley_vbeta: 0.01
   stanley_vgamma: 0.3
+  stanley_v_integral_accel_limit: 2.0

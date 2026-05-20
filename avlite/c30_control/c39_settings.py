@@ -22,6 +22,7 @@ class ControlSettings:
     stanley_valpha=0.8
     stanley_vbeta=0.01
     stanley_vgamma=0.3
+    stanley_v_integral_accel_limit=2.0
     stanley_slow_down_cte = 0.5  # threshold for slowing down based on steering CTE
     stanley_slow_down_heading_cte = np.pi / 6  # threshold for slowing down based on heading CTE
     stanley_slow_down_vel_threshold = 3 # threshold for slowing down based on steering CTE

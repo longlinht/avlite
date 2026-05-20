@@ -13,8 +13,8 @@ log = logging.getLogger(__name__)
 class StanleyController(ControlStrategy):
     def __init__(self, tj:Optional[TrajectoryTracker]=None, k=None, k_soft=None,
                  lookahead=None, heading_lookahead=None, valpha=None, vbeta=None,
-                 vgamma=None, slow_down_cte=None, slow_down_heading_cte=None,
-                 slow_down_vel_threshold=None):
+                 vgamma=None, v_integral_accel_limit=None, slow_down_cte=None,
+                 slow_down_heading_cte=None, slow_down_vel_threshold=None):
         """
         Stanley Controller for trajectory following. The controller also slows down the vehicle if steer CTE is > 0.5
         :param tj: Trajectory to follow.
@@ -49,6 +49,10 @@ class StanleyController(ControlStrategy):
         self.valpha = ControlSettings.stanley_valpha if valpha is None else valpha
         self.vbeta = ControlSettings.stanley_vbeta if vbeta is None else vbeta
         self.vgamma = ControlSettings.stanley_vgamma if vgamma is None else vgamma
+        configured_integral_limit = getattr(ControlSettings, "stanley_v_integral_accel_limit", 2.0)
+        self.v_integral_accel_limit = (
+            configured_integral_limit if v_integral_accel_limit is None else v_integral_accel_limit
+        )
         self.cte_v_sum = 0
         self.cte_velocity = 0
         self.previous_cte_velocity = 0  # For D-term calculation
@@ -141,7 +145,16 @@ class StanleyController(ControlStrategy):
 
         prev_cte_v = self.cte_velocity
         self.cte_velocity = ego.velocity - target_velocity
+        if prev_cte_v != 0.0 and self.cte_velocity != 0.0 and np.sign(prev_cte_v) != np.sign(self.cte_velocity):
+            # Prevent stale underspeed/overspeed history from commanding the
+            # wrong longitudinal action after crossing the target velocity.
+            self.cte_v_sum = 0.0
         self.cte_v_sum += self.cte_velocity
+        if self.vbeta != 0.0 and self.v_integral_accel_limit is not None:
+            integral_limit = abs(float(self.v_integral_accel_limit))
+            if integral_limit > 0.0:
+                integral_sum_limit = integral_limit / abs(float(self.vbeta))
+                self.cte_v_sum = np.clip(self.cte_v_sum, -integral_sum_limit, integral_sum_limit)
 
         vP = -self.valpha * self.cte_velocity
         vI = -self.vbeta * self.cte_v_sum
@@ -161,10 +174,21 @@ class StanleyController(ControlStrategy):
         
         acc = np.clip(acc, ego.min_acceleration, ego.max_acceleration)
 
-        # lower the speed if abs(steer) > 0.5
+        # Lower speed for large tracking error, but do not command braking when
+        # the vehicle is already below the reference speed. The previous
+        # unconditional exponential subtraction caused brake/throttle oscillation
+        # in long AutoVerse corners: large CTE at low speed still produced full
+        # braking, stalling the car before it could recover laterally.
         if (np.abs(self.cte_steer) > self.slow_down_cte or np.abs(heading_error) > self.slow_down_heading_cte) \
             and ego.velocity > self.slow_down_vel_threshold:
-            acc2 = acc - 3 * np.e**np.abs(self.cte_steer)  # reduce acceleration based on steering error
+            if self.cte_velocity > 0.0:
+                acc2 = acc - 3 * np.e**np.abs(self.cte_steer)
+            else:
+                # Below target speed: cap positive acceleration near the target,
+                # but never turn a recovery command into braking.
+                speed_deficit = max(0.0, target_velocity - ego.velocity)
+                accel_cap = min(ego.max_acceleration, speed_deficit)
+                acc2 = min(acc, accel_cap) if acc > 0.0 else max(0.0, acc)
             acc2 = np.clip(acc2, ego.min_acceleration, ego.max_acceleration)
             log.debug(f"Steering error {self.cte_steer:+6.2f} is large, reducing acceleration from {acc:.2f} to {acc2:.2f}")
             acc = acc2
