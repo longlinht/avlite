@@ -1,89 +1,59 @@
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
-from typing import Type, Optional
-
-import numpy as np
+from typing import ClassVar
 
 from avlite.c10_perception.c11_perception_model import PerceptionModel
-from avlite.c10_perception.c19_settings import PerceptionSettings
-from avlite.c60_common.c62_capabilities import WorldCapability, LocalizationCapability
+from avlite.c10_perception.c19_settings import PerceptionSettings, PerceptionSettingsSchema
+from avlite.c50_common.c51_capabilities import StackCapability, StackRequirement, WorldRequirement
+from avlite.c50_common.c52_world_sensor_datatypes import SensorFrame
 
 log = logging.getLogger(__name__)
 
 
 class LocalizationStrategy(ABC):
-    """
-    Abstract base class for localization strategies.
+    """Abstract base for localization strategies.
 
-    A localization strategy estimates the ego vehicle's pose (and optionally
-    velocity) using sensor data such as IMU, LiDAR, or camera images.
-    Implementations update ``self.perception_model.ego_vehicle`` in-place so
-    that downstream planning and control modules always see the latest pose.
+    Estimates the ego pose (and optionally velocity) from sensors. The tick
+    entrypoint :meth:`localize` takes optional ``perception_model`` and
+    ``sensors``, supplied by the executer. Implementations update
+    ``perception_model.ego_vehicle`` in-place so downstream modules see the
+    latest pose.
 
-    Subclasses must implement:
-        - ``requirements``  – the :class:`WorldCapability` set the bridge must
-          provide for this strategy to work.
-        - ``capabilities``  – the :class:`LocalizationCapability` set this
-          strategy advertises (e.g. GNSS, LIDAR_LOCALIZATION).
-        - ``localize(...)`` – the main estimation step.
+    Capability attrs default to empty world/stack requirements and
+    ``LOCALIZATION`` stack capability; override as class attributes when needed.
     """
 
     registry = {}
 
-    def __init__(self, perception_model: PerceptionModel, setting: Type[PerceptionSettings] = PerceptionSettings):
+    world_requirements: ClassVar[frozenset[WorldRequirement]] = frozenset()
+    stack_requirements: ClassVar[frozenset[StackRequirement]] = frozenset()
+    stack_capabilities: ClassVar[frozenset[StackCapability]] = frozenset({StackCapability.LOCALIZATION})
+
+    def __init__(self, perception_model: PerceptionModel, setting: PerceptionSettingsSchema = PerceptionSettings):
         self.perception_model = perception_model
-
-    # ------------------------------------------------------------------
-    # Abstract interface
-    # ------------------------------------------------------------------
-
-    @property
-    @abstractmethod
-    def requirements(self) -> set[WorldCapability]:
-        """World capabilities required by this localization strategy."""
-        pass
-
-    @property
-    @abstractmethod
-    def capabilities(self) -> set[LocalizationCapability]:
-        """Localization capabilities provided by this strategy."""
-        pass
 
     @abstractmethod
     def localize(
         self,
-        imu: Optional[np.ndarray] = None,
-        lidar: Optional[np.ndarray] = None,
-        rgb_img: Optional[np.ndarray] = None,
+        perception_model: PerceptionModel | None = None,
+        sensors: SensorFrame | None = None,
     ) -> None:
-        """
-        Run one localization step.
+        """Run one localization step; update ego pose in-place.
 
-        The method must update ``self.perception_model.ego_vehicle`` in-place
-        (x, y, theta, velocity, …).  It does **not** return a value.
-
-        Parameters
-        ----------
-        imu : np.ndarray, optional
-            IMU measurement array.
-        lidar : np.ndarray, optional
-            LiDAR point cloud (N×3 or N×4).
-        rgb_img : np.ndarray, optional
-            RGB camera image (H×W×3).
+        Args:
+            perception_model: Stack world-state snapshot. When provided, becomes
+                the authoritative model for this step (also stored on ``self``).
+                When omitted, use constructor-held ``self.perception_model``.
+            sensors: World sensor snapshot for this tick (``None`` if unused).
+                Read fields as needed (e.g. ``sensors.lidar``, ``sensors.imu``).
         """
         pass
-
-    # ------------------------------------------------------------------
-    # Lifecycle helpers
-    # ------------------------------------------------------------------
 
     def reset(self):
         """Reset any internal state.  Override in subclasses if needed."""
         pass
-
-    # ------------------------------------------------------------------
-    # Auto-registration
-    # ------------------------------------------------------------------
 
     def __init_subclass__(cls, abstract=False, **kwargs):
         super().__init_subclass__(**kwargs)

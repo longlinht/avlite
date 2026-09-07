@@ -3,21 +3,27 @@ import copy
 import logging
 from typing import Optional
 
-from avlite.c10_perception.c11_perception_model import EgoState
-from avlite.c60_common.c63_trajectory_tracker import TrajectoryTracker
-from avlite.c30_control.c32_control_strategy import ControlStrategy, ControlComand
-from avlite.c30_control.c39_settings import ControlSettings
+from avlite.c10_perception.c11_perception_model import EgoState, PerceptionModel
+from avlite.c50_common.c54_trajectory_tracker import TrajectoryTracker
+from avlite.c20_planning.c21_planning_model import GlobalPlan, LocalPlan
+from avlite.c30_control.c32_control_strategy import ControlStrategy
+from avlite.c30_control.c31_control_model import ControlCommand
+from avlite.c30_control.c39_settings import ControlSettings, ControlSettingsSchema
+from avlite.c50_common.c52_world_sensor_datatypes import SensorFrame
 
 log = logging.getLogger(__name__)
 
 class PIDController(ControlStrategy):
-    def __init__(self, tj:Optional[TrajectoryTracker]=None, alpha=ControlSettings.pid_alpha, beta=ControlSettings.pid_beta, gamma=ControlSettings.pid_gamma,
-                 valpha=ControlSettings.pid_valpha, vbeta=ControlSettings.pid_vbeta, vgamma=ControlSettings.pid_vgamma, pid_lookahead=ControlSettings.pid_lookahead):
+    def __init__(self, tj:Optional[TrajectoryTracker]=None, setting: ControlSettingsSchema = ControlSettings):
+        """PID controller. Gains are read live from *setting* (the ``ControlSettings``
+        singleton by default): steering gains ``c33_pid_alpha``/``beta``/``gamma``,
+        velocity gains ``c33_pid_valpha``/``vbeta``/``vgamma``, and ``c33_pid_lookahead``.
+        """
         super().__init__(tj)
-        self.alpha, self.beta, self.gamma = alpha, beta, gamma
+        self.alpha, self.beta, self.gamma = setting.c33_pid_alpha, setting.c33_pid_beta, setting.c33_pid_gamma
 
-        self.valpha, self.vbeta, self.vgamma = valpha, vbeta, vgamma
-        self.lookahead = pid_lookahead
+        self.valpha, self.vbeta, self.vgamma = setting.c33_pid_valpha, setting.c33_pid_vbeta, setting.c33_pid_vgamma
+        self.lookahead = setting.c33_pid_lookahead
         
         self.cte_steer = 0
         self.cte_velocity = 0  # Track velocity error
@@ -26,12 +32,19 @@ class PIDController(ControlStrategy):
         self.cte_v_sum = 0
 
 
-    def control(self, ego: EgoState, tj: Optional[TrajectoryTracker]=None, control_dt=None) -> ControlComand:
-        if tj is not None:
-            self.tj = tj
-        elif tj is None and self.tj is None:
+    def control(
+        self,
+        ego: EgoState,
+        plan: GlobalPlan | LocalPlan | None = None,
+        control_dt=None,
+        perception_model: PerceptionModel | None = None,
+        sensors: SensorFrame | None = None,
+    ) -> ControlCommand:
+        if plan is not None:
+            self.tj = plan.as_trajectory()
+        elif self.tj is None:
             log.warning("Trajectory is not provided. Steering and acceleration set to zero. Please provide a trajectory.")
-            return ControlComand(steer=0, acceleration=0)
+            return ControlCommand(steer=0, acceleration=0)
 
         # to deal with fast replanning, need to have a lookahead to the next trajectory
         if self.tj.parent_trajectory is not None:  
@@ -64,7 +77,7 @@ class PIDController(ControlStrategy):
 
         # Compute the steering angle
         steer = P + I + D
-        steer = np.clip(steer, ego.min_steering, ego.max_steering)
+        steer = np.clip(steer, self.ego_min_steering, self.ego_max_steering)
         # Logging with formatted string for clarity
         log.debug( f"Steer: {steer:+6.2f} [P={P:+.3f}, I={I:+.3f}, D={D:+.3f}] based on CTE: {cte:+.3f}")
         self.last_steer = steer
@@ -89,17 +102,25 @@ class PIDController(ControlStrategy):
         
         # Emergency braking: if target velocity is 0 (or very low) and we're still moving,
         # apply maximum braking force regardless of PID output
-        if target_velocity < 0.5 and ego.velocity > 1.0:
+        if target_velocity < ControlSettings.c30_emergency_velocity_threshold and ego.velocity > ControlSettings.c30_emergency_min_moving_velocity:
             # Emergency stop requested - apply max deceleration
-            emergency_acc = ego.min_acceleration * 0.9  # 90% of max braking
+            emergency_acc = self.ego_min_acceleration * ControlSettings.c30_emergency_braking_factor  # 90% of max braking
             if acc > emergency_acc:
                 log.warning(f"Emergency braking: overriding PID acc {acc:.2f} with {emergency_acc:.2f}")
                 acc = emergency_acc
         
-        acc = np.clip(acc, ego.min_acceleration, ego.max_acceleration)
+        acc = np.clip(acc, self.ego_min_acceleration, self.ego_max_acceleration)
+
+        # Anti-windup: clear integral when stopped so accumulated braking error
+        # does not keep pushing the car backwards past zero velocity.
+        if ego.velocity <= 0 and self.cte_v_sum > 0:
+            self.cte_v_sum = 0.0
+        # Velocity floor: never command further deceleration when already at rest.
+        if ego.velocity <= 0 and acc < 0:
+            acc = 0.0
 
         log.debug(f"Acc  : {acc:+6.2f} [P={vP:+.3f}, I={vI:+.3f}, D={vD:+.3f}] based on CTE: {self.cte_velocity:+.2f} ({ego.velocity:.2f} vs target: {target_velocity:.2f})")
-        cmd = ControlComand(steer=steer, acceleration=acc)
+        cmd = ControlCommand(steer=steer, acceleration=acc)
         self.cmd = cmd
         return cmd
 

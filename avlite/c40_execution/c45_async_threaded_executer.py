@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+from avlite.c10_perception.c12_perception_strategy import PerceptionModel
+from avlite.c10_perception.c12_perception_strategy import PerceptionStrategy
+from avlite.c20_planning.c22_global_planning_strategy import GlobalPlannerStrategy
+from avlite.c20_planning.c23_local_planning_strategy import LocalPlanningStrategy
+from avlite.c30_control.c32_control_strategy import ControlStrategy
+from avlite.c40_execution.c41_world_bridge import WorldBridge, is_world_stack_capability_enabled
+from avlite.c40_execution.c42_execution_strategy import ExecutionStrategy
+from avlite.c40_execution.c43_task_strategy import TaskStrategy
+from avlite.c50_common.c51_capabilities import StackCapability
+
+import threading
+import time
+import logging
+
+log = logging.getLogger(__name__)
+
+# TODO: Perception to be moved to a separate thread
+class AsyncThreadedExecuter(ExecutionStrategy):
+    # Floor sleep when pace_* is off so free-run workers cannot busy-spin the GIL
+    # (matches headless free-run timeout of 1 ms).
+    _FREE_RUN_SLEEP_S = 0.001
+
+    def __init__(
+        self,
+        perception_model: PerceptionModel,
+        perception: PerceptionStrategy = None,
+        global_planner: GlobalPlannerStrategy = None,
+        local_planner: LocalPlanningStrategy = None,
+        controller: ControlStrategy = None,
+        world: WorldBridge = None,
+        localization=None,
+        mapping=None,
+        perception_dt=0.5,
+        replan_dt=0.5,
+        control_dt=0.05,
+        localization_dt=0.1,
+        combined_perception_planning: bool = True,
+        tasks: list[TaskStrategy] | None = None,
+    ):
+        super().__init__(perception_model, perception, global_planner, local_planner, controller, world,
+                         localization=localization, mapping=mapping, perception_dt=perception_dt,
+                         replan_dt=replan_dt, control_dt=control_dt, localization_dt=localization_dt,
+                         tasks=tasks)
+
+        # When True, perception runs inside the planner thread (lower overhead).
+        # When False, perception gets its own dedicated thread.
+        self._combined_perception_planning = combined_perception_planning
+
+        # Thread-specific attributes - no need for shared Values
+        self.__planner_last_step_time = time.time()
+        self.__planner_elapsed_time = 0.0
+        self.__planner_start_time = time.time()
+        self.__controller_last_step_time = 0.0
+        self.__prev_exec_time = None
+
+        # Locks for thread safety
+        self.lock_planner = threading.Lock()
+        self.lock_controller = threading.Lock()
+        self.lock_world = threading.Lock()
+
+        self.call_replan = True
+        self.call_control = True
+        self.call_perceive = True
+        self.call_localize = True
+        self.pace_perception = True
+        self.pace_replan = True
+        self.pace_control = True
+        self.pace_sim = True
+        self.sim_dt = 0.01
+
+        self.threads = []
+        self.threads_started = False
+
+        self.planner_thread = None
+        self.controller_thread = None
+        self.perception_thread = None
+
+        self.create_threads()
+
+    def step(
+        self,
+        perception_dt=0.01,
+        control_dt=0.01,
+        replan_dt=0.01,
+        localization_dt=0.01,
+        sim_dt=0.01,
+        call_replan=True,
+        call_control=True,
+        call_perceive=False,
+        call_localize=True,
+        pace_perception=True,
+        pace_replan=True,
+        pace_control=True,
+        pace_sim=True,
+    ):
+        self.perception_dt = perception_dt
+        self.control_dt = control_dt
+        self.replan_dt = replan_dt
+        self.localization_dt = localization_dt
+        self.sim_dt = sim_dt
+        self.call_replan = call_replan
+        self.call_control = call_control
+        self.call_perceive = call_perceive
+        self.call_localize = call_localize
+        self.pace_perception = pace_perception
+        self.pace_replan = pace_replan
+        self.pace_control = pace_control
+        self.pace_sim = pace_sim
+
+        if not self.threads_started:
+            log.info(f"Threads not started yet. Creating and starting threads.")
+            self.create_threads()
+            self.start_threads()
+            return
+        elif self.threads_started and all(not t.is_alive() for t in self.threads):
+            log.warning(f"All threads are dead. Recreating and starting threads.")
+            self.stop()
+            self.create_threads()
+            self.start_threads()
+            return
+        elif (
+            self.threads_started
+            and (
+                (self.planner_thread and call_replan != self.planner_thread.is_alive())
+                or (self.controller_thread and call_control != self.controller_thread.is_alive())
+            )
+        ):  # or call_perceive != (self.perception_thread.is_alive() if self.perception_thread else False):
+
+            log.error( f"Some threads are dead: {self.planner_thread.is_alive() if self.planner_thread else 'None'}, Controller status: {self.controller_thread.is_alive() if self.controller_thread else 'None'} . Call stop() to terminate all threads.")
+            self.create_threads()
+            self.start_threads()
+            return
+
+        # delta_t_exec = time.time() - self.__prev_exec_time if self.__prev_exec_time is not None else 0
+        # self.__prev_exec_time = time.time()
+        # self.elapsed_real_time += delta_t_exec
+
+    def worker_planning(self):
+        log.info(f"Plan Worker Started")
+        log.info(f"replan dt: {self.replan_dt}")
+        __localize_last_t = time.time()
+        __planner_step_last_t = time.time()
+
+        while not self.stopped and self.call_replan:
+            try:
+                t1 = time.time()
+                dt = t1 - self.__planner_last_step_time
+                self.__planner_elapsed_time += time.time() - self.__planner_start_time
+
+                # Resolve every gate before running any stage, so the iteration can take a
+                # single sensor snapshot and hand the same world instant to each stage. Gates
+                # include module presence so an unassembled stage never triggers a fetch.
+                replan_stalled = dt > 10 * self.replan_dt
+                if replan_stalled:
+                    self.__planner_last_step_time = t1
+                do_replan = (
+                    not replan_stalled
+                    and self.local_planner is not None
+                    and ((not self.pace_replan) or (dt > self.replan_dt))
+                )
+
+                # Localization owns PM ego only when GT localization is not enabled.
+                do_localize = (
+                    self.call_localize
+                    and self.localization is not None
+                    and not is_world_stack_capability_enabled(StackCapability.LOCALIZATION)
+                    and t1 - __localize_last_t >= self.localization_dt
+                )
+
+                # Perception runs alongside planning, rate-limited by perception_dt.
+                # Only active when combined mode is on; in separate-thread mode the
+                # dedicated worker_perception thread handles this instead.
+                do_perceive = False
+                if self.call_perceive and self.perception and self._combined_perception_planning:
+                    dt_p = t1 - self._perception_fps_tracker.last
+                    if dt_p > 10 * self.perception_dt:
+                        self._perception_fps_tracker.last = t1
+                    else:
+                        do_perceive = (not self.pace_perception) or (dt_p >= self.perception_dt)
+
+                sensors = (
+                    self.world.get_sensor_frame()
+                    if (do_replan or do_localize or do_perceive)
+                    else None
+                )
+
+                if do_replan:
+                    self.__planner_last_step_time = time.time()
+                    self._replan_step(sensors)
+
+                if self.local_planner and self.controller:
+                    self.controller.set_plan(self.local_planner.get_local_plan())
+
+                # Rate-limit local_planner.step to replan_dt — avoids flooding the GIL
+                # with continuous KD-tree queries that starve the controller thread
+                step_due = (not self.pace_replan) or (t1 - __planner_step_last_t >= self.replan_dt)
+                if self.local_planner and step_due:
+                    self.local_planner.step(self.pm.ego_vehicle)
+                    __planner_step_last_t = t1
+
+                t2 = time.time()
+                log.debug("Planner iteration: dt=%.3fs, execution time=%.3fs", dt, t2 - t1)
+
+                if do_localize:
+                    try:
+                        self._localization_step(sensors)
+                        __localize_last_t = t1
+                    except Exception as e:
+                        log.error(f"Error in localization step: {e}", exc_info=True)
+
+                if do_perceive:
+                    try:
+                        self._perception_step(sensors)
+                    except Exception as e:
+                        log.error(f"Error in perception step: {e}", exc_info=True)
+
+                if self.pace_replan:
+                    time.sleep(max(0, self.replan_dt - (time.time() - t1)))
+                else:
+                    time.sleep(self._FREE_RUN_SLEEP_S)
+
+            except Exception as e:
+                log.error(f"Error in planner worker: {e}", exc_info=True)
+                time.sleep(0.1)
+
+    def worker_control(self):
+        log.info(f"Controller Worker Started")
+        while not self.stopped and self.call_control:
+            try:
+                t1 = time.time()
+                wall_since_ctrl = t1 - self.__controller_last_step_time
+
+                if wall_since_ctrl > 10 * self.control_dt:  # probably its the first iteration
+                    self.__controller_last_step_time = t1
+
+                recompute = (not self.pace_control) or (wall_since_ctrl > self.control_dt)
+                if recompute and wall_since_ctrl <= 10 * self.control_dt:
+                    with self.lock_controller:
+                        self.__controller_last_step_time = t1
+                    with self.lock_world:
+                        if is_world_stack_capability_enabled(StackCapability.LOCALIZATION):
+                            self.pm.ego_vehicle.copy_from(self.world.get_ego_state())
+                        if self.controller and self.local_planner:
+                            self._control_step(self.sim_dt, self.world.get_sensor_frame())
+
+                # Free-run: sim and real share the same wall interval (start-of-iter stamps).
+                # Paced: fixed sim_dt; real accumulates full loop wall including sleep.
+                if self.pace_sim:
+                    dt = self.sim_dt
+                    with self.lock_world:
+                        self._simulate_step(dt)
+                    self.elapsed_sim_time += dt
+                else:
+                    if self._last_sim_wall_t is None:
+                        self._last_sim_wall_t = t1
+                    else:
+                        dt = max(1e-4, min(t1 - self._last_sim_wall_t, 1.0))
+                        self._last_sim_wall_t = t1
+                        with self.lock_world:
+                            self._simulate_step(dt)
+                        self.elapsed_sim_time += dt
+                        self.elapsed_real_time += dt
+
+                self.task_runner.step(self)
+
+                t2 = time.time()
+                if self.pace_control:
+                    time.sleep(max(0, self.control_dt - (t2 - t1)))
+                elif self.pace_sim:
+                    time.sleep(max(0, self.sim_dt - (t2 - t1)))
+                else:
+                    time.sleep(self._FREE_RUN_SLEEP_S)
+
+                if self.pace_sim:
+                    t_end = time.time()
+                    if self.__prev_exec_time is not None:
+                        self.elapsed_real_time += t_end - self.__prev_exec_time
+                    self.__prev_exec_time = t_end
+                log.debug("Controller iteration actual step time %.3f s", t2 - t1)
+            except Exception as e:
+                log.error(f"Error in controller worker: {e}", exc_info=True)
+                time.sleep(0.1)
+
+    def worker_perception(self):
+        while not self.stopped and self.call_perceive:
+            try:
+                t1 = time.time()
+                if self.perception and self.call_perceive:
+                    self._perception_step(self.world.get_sensor_frame())
+                t2 = time.time()
+                log.debug("Perception iteration: dt=%.3fs", t2 - t1)
+                if self.pace_perception:
+                    time.sleep(max(0, self.perception_dt - (t2 - t1)))
+                else:
+                    time.sleep(self._FREE_RUN_SLEEP_S)
+            except Exception as e:
+                log.error(f"Error in perception worker: {e}")
+                time.sleep(0.1)
+
+    @property
+    def ui_poll_delay(self):
+        # step() is nearly instant — all work runs in background threads.
+        # Tell the UI to poll at 20 Hz rather than burning the event loop.
+        return 0.05
+
+    def stop(self):
+        # Safe to call from a worker: set stopped, join peers, never join self.
+        super().stop()
+        current = threading.current_thread()
+        threads = list(self.threads)
+        count = sum(1 for t in threads if t and t.is_alive())
+        for t in threads:
+            if t and t.is_alive():
+                log.info(f"Stopping thread {t.name}")
+
+        try:
+            for t in threads:
+                if t and t.is_alive() and t is not current:
+                    t.join(timeout=1.0)
+                    if t.is_alive():
+                        log.warning(f"Thread {t.name} is still running after stop request")
+        finally:
+            log.info(
+                f"Async Executer Threads Stopped. {count}/{len(threads)} threads signaled to stop."
+            )
+            self.threads = []
+            self.planner_thread = None
+            self.controller_thread = None
+            self.perception_thread = None
+            self.threads_started = False
+            # In-flight worker may restamp after ExecutionStrategy.stop() cleared this.
+            self._last_sim_wall_t = None
+
+    def create_threads(self):
+        log.info(f"Creating threads...")
+        # Make threads daemon so they exit when main thread exits
+        self.threads = []
+
+        if self.planner_thread is None or not self.planner_thread.is_alive():
+            self.planner_thread = threading.Thread( target=self.worker_planning, name="Planner", daemon=True,  )
+            self.threads.append(self.planner_thread)
+            log.info(f"Planner thread created: {self.planner_thread.name}")
+
+        if self.controller_thread is None or not self.controller_thread.is_alive():
+            self.controller_thread = threading.Thread(target=self.worker_control, name="Controller", daemon=True)
+            self.threads.append(self.controller_thread)
+            log.info(f"Controller thread created: {self.controller_thread.name}")
+
+        if not self._combined_perception_planning:
+            self.perception_thread = threading.Thread(target=self.worker_perception, name="Perception", daemon=True)
+            self.threads.append(self.perception_thread)
+            log.info(f"Perception thread created: {self.perception_thread.name}")
+
+        log.info(f"{len(self.threads)} threads created.")
+
+
+    def start_threads(self):
+        if self.threads_started:
+            log.warning("Threads already started. Call stop() to restart.")
+            return
+        if len(self.threads) == 0:
+            log.warning("No threads created to start. Call create_threads() first.")
+            return
+
+        self.stopped = False
+        self._last_sim_wall_t = None
+
+        t1 = time.time()
+        log.info(f"Starting Planner Thread...")
+        self.__planner_start_time = time.time()
+        if self.planner_thread:
+            self.planner_thread.start()
+
+        log.info(f"Starting Controller Thread...")
+        if self.controller_thread:
+            self.controller_thread.start()
+
+        if not self._combined_perception_planning and self.perception_thread:
+            log.info(f"Starting Perception Thread...")
+            self.perception_thread.start()
+
+        self.threads_started = True
+        log.info(f"Threads started in {time.time()-t1:.3f} s")

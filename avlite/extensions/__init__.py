@@ -1,1 +1,1 @@
-"""AVLite extensions package."""
+"""Compatibility namespace for legacy external AVLite plugins."""

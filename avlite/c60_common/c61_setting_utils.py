@@ -166,7 +166,58 @@ def save_setting(setting, profile="default") -> None:
 
 
 def load_setting(setting, profile="default") -> None:
-    """Load visualization configuration from a YAML file. """
+    """Load a legacy split profile or delegate schema-backed settings."""
+    from avlite.c60_apps.c64_settings_schema import (
+        apply_validated_to_setting,
+        schema_of,
+        validate_profile,
+    )
+
+    schema = schema_of(setting)
+    if schema is not None:
+        from avlite.c60_apps.c65_setting_utils import (
+            load_setting as load_schema_setting,
+            profile_file_path,
+            setting_section,
+        )
+        from avlite.c60_apps.c68_paths import ConfigPaths
+
+        active_path = Path(profile_file_path(profile, for_write=False))
+        if active_path.is_file():
+            return load_schema_setting(setting, profile=profile)
+
+        # The 0.5 GUI deliberately uses a user-only config target in editable
+        # checkouts. Legacy headless callers, however, historically loaded the
+        # repository defaults directly and must not depend on opening the GUI.
+        bundled_path = ConfigPaths.bundled_dir() / f"{profile}.yaml"
+        if bundled_path.is_file():
+            try:
+                with bundled_path.open("r") as f:
+                    config = yaml.safe_load(f) or {}
+                group, key = setting_section(setting)
+                section = (
+                    (config.get("plugins") or {}).get(key)
+                    if group == "plugins"
+                    else config.get(key)
+                )
+                validated = validate_profile(
+                    schema,
+                    section if isinstance(section, dict) else {},
+                    filepath=str(bundled_path),
+                    profile=profile,
+                )
+                apply_validated_to_setting(setting, validated)
+                log.info(
+                    "Loaded %s from bundled profile %s",
+                    key,
+                    bundled_path,
+                )
+                return True
+            except Exception as e:
+                log.error("Failed to load bundled profile %s: %s", bundled_path, e)
+                return False
+        return load_schema_setting(setting, profile=profile)
+
     filepath = resolve_project_path(setting.filepath)
     try:
         with filepath.open('r') as f:
