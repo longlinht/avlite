@@ -54,10 +54,6 @@ class ControlStrategy(ABC):
         log.debug("Controller trajectory tracker updated")
         self.tj = tj
 
-    def set_trajectory(self, tj: TrajectoryTracker | None = None) -> None:
-        """Compatibility alias for integrations using the pre-0.5 API."""
-        self.set_trajectory_tracker(tj)
-
     def set_plan(self, plan: GlobalPlan | LocalPlan) -> None:
         """Set the active reference path from a GlobalPlan or LocalPlan.
 

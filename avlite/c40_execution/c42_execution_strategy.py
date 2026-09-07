@@ -91,11 +91,6 @@ class ExecutionStrategy(ABC):
         """Stack-facing ego pose — always ``pm.ego_vehicle`` (mutable in place)."""
         return self.pm.ego_vehicle
 
-    @ego_state.setter
-    def ego_state(self, value: EgoState) -> None:
-        """Keep legacy executers assigning ego_state synchronized with the PM."""
-        self.pm.ego_vehicle = value
-
     # --- public API ---
 
     def dispatch_task(self, task: TaskStrategy, event: StackEvent | None = None,) -> None:

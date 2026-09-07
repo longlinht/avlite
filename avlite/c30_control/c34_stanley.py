@@ -1,240 +1,145 @@
 import logging
 from typing import Optional
-
 import numpy as np
 
 from avlite.c10_perception.c11_perception_model import EgoState, PerceptionModel
+from avlite.c50_common.c54_trajectory_tracker import TrajectoryTracker
 from avlite.c20_planning.c21_planning_model import GlobalPlan, LocalPlan
 from avlite.c30_control.c31_control_model import ControlCommand
 from avlite.c30_control.c32_control_strategy import ControlStrategy
 from avlite.c30_control.c39_settings import ControlSettings, ControlSettingsSchema
 from avlite.c50_common.c52_world_sensor_datatypes import SensorFrame
-from avlite.c50_common.c54_trajectory_tracker import TrajectoryTracker
 
 log = logging.getLogger(__name__)
 
-
 class StanleyController(ControlStrategy):
-    """Stanley lateral control with PID reference-speed tracking."""
+    def __init__(self, tj:Optional[TrajectoryTracker]=None, setting: ControlSettingsSchema = ControlSettings):
+        """
+        Stanley Controller for trajectory following. The controller also slows down the vehicle if steer CTE is > 0.5
 
-    def __init__(
-        self,
-        tj: Optional[TrajectoryTracker] = None,
-        k=None,
-        k_soft=None,
-        lookahead=None,
-        heading_lookahead=None,
-        valpha=None,
-        vbeta=None,
-        vgamma=None,
-        v_integral_accel_limit=None,
-        slow_down_cte=None,
-        slow_down_heading_cte=None,
-        slow_down_vel_threshold=None,
-        setting: ControlSettingsSchema | None = None,
-    ):
-        # AVLite 0.5 briefly accepted ``setting`` as the second positional
-        # argument. Detect that form while retaining the older gain overrides.
-        if setting is None and k is not None and hasattr(k, "c34_stanley_k"):
-            setting, k = k, None
-        setting = setting or ControlSettings
+        :param tj: Trajectory to follow.
+        :param setting: Control settings the gains/thresholds are read from (defaults to
+            the live ``ControlSettings`` singleton; inject a stub for tests).
+
+        Reads (from ``setting``): ``c34_stanley_k`` (steering gain), ``c34_stanley_k_soft``
+        (low-speed softening), ``c34_stanley_lookahead``, velocity gains
+        ``c34_stanley_valpha``/``vbeta``/``vgamma``, and the slow-down thresholds
+        ``c34_stanley_slow_down_cte``/``slow_down_heading_cte``/``slow_down_vel_threshold``.
+        """
         super().__init__(tj)
-        self.setting = setting
-        self.lookahead = (
-            setting.c34_stanley_lookahead if lookahead is None else lookahead
-        )
-        configured_heading_lookahead = getattr(
-            setting, "c34_stanley_heading_lookahead", self.lookahead
-        )
-        self.heading_lookahead = (
-            configured_heading_lookahead
-            if heading_lookahead is None
-            else heading_lookahead
-        )
-        self.k = setting.c34_stanley_k if k is None else k
-        self.k_soft = setting.c34_stanley_k_soft if k_soft is None else k_soft
-        self.slow_down_cte = (
-            setting.c34_stanley_slow_down_cte
-            if slow_down_cte is None
-            else slow_down_cte
-        )
-        self.slow_down_heading_cte = (
-            setting.c34_stanley_slow_down_heading_cte
-            if slow_down_heading_cte is None
-            else slow_down_heading_cte
-        )
-        self.slow_down_vel_threshold = (
-            setting.c34_stanley_slow_down_vel_threshold
-            if slow_down_vel_threshold is None
-            else slow_down_vel_threshold
-        )
-        self.valpha = setting.c34_stanley_valpha if valpha is None else valpha
-        self.vbeta = setting.c34_stanley_vbeta if vbeta is None else vbeta
-        self.vgamma = setting.c34_stanley_vgamma if vgamma is None else vgamma
-        configured_integral_limit = getattr(
-            setting, "c34_stanley_v_integral_accel_limit", 2.0
-        )
-        self.v_integral_accel_limit = (
-            configured_integral_limit
-            if v_integral_accel_limit is None
-            else v_integral_accel_limit
-        )
-        self.cte_steer = 0.0
-        self.cte_v_sum = 0.0
-        self.cte_velocity = 0.0
-        self.previous_cte_velocity = 0.0
+        self.lookahead = setting.c34_stanley_lookahead
+        self.k = setting.c34_stanley_k
+        self.k_soft = setting.c34_stanley_k_soft
+        self.cte_steer = 0
+        self.slow_down_cte = setting.c34_stanley_slow_down_cte  # threshold for slowing down based on steering CTE
+        self.slow_down_heading_cte = setting.c34_stanley_slow_down_heading_cte
+        self.slow_down_vel_threshold = setting.c34_stanley_slow_down_vel_threshold # threshold for slowing down based on steering CTE
 
-    @staticmethod
-    def _is_closed_loop(tj: TrajectoryTracker) -> bool:
-        return (
-            tj.is_initialized
-            and len(tj.path_x) > 2
-            and np.hypot(
-                tj.path_x[0] - tj.path_x[-1],
-                tj.path_y[0] - tj.path_y[-1],
-            )
-            < 1e-6
-        )
+        self.valpha, self.vbeta, self.vgamma = setting.c34_stanley_valpha, setting.c34_stanley_vbeta, setting.c34_stanley_vgamma
+        self.cte_v_sum = 0
+        self.cte_velocity = 0
+        self.previous_cte_velocity = 0  # For D-term calculation
+        self.previous_heading = None
 
-    def _heading_at_s(self, tj: TrajectoryTracker, s: float) -> float:
-        if not tj.is_initialized or len(tj.path_s) == 0:
-            raise ValueError("TrajectoryTracker not initialized")
-
-        path_s = np.asarray(tj.path_s, dtype=float)
-        target_s = float(s)
-        start_s = float(path_s[0])
-        end_s = float(path_s[-1])
-        if end_s > start_s:
-            if self._is_closed_loop(tj):
-                target_s = start_s + ((target_s - start_s) % (end_s - start_s))
-            else:
-                target_s = float(np.clip(target_s, start_s, end_s))
-        wp = tj.get_closest_waypoint_frm_sd(target_s, 0.0)
-        return float(tj.path_heading[wp])
 
     def control(
         self,
         ego: EgoState,
-        plan: GlobalPlan | LocalPlan | TrajectoryTracker | None = None,
-        control_dt: float | None = None,
+        plan: GlobalPlan | LocalPlan | None = None,
+        control_dt=None,
         perception_model: PerceptionModel | None = None,
         sensors: SensorFrame | None = None,
     ) -> ControlCommand:
-        del control_dt, perception_model, sensors
-        if isinstance(plan, TrajectoryTracker):
-            self.tj = plan
-        elif plan is not None:
+        if plan is not None:
             self.tj = plan.as_trajectory()
         elif self.tj is None:
-            log.warning("Trajectory is not provided; returning a zero control command.")
-            return ControlCommand(steer=0.0, acceleration=0.0)
+            log.warning("Trajectory is not provided. Steering and acceleration set to zero. Please provide a trajectory.")
+            return ControlCommand(steer=0, acceleration=0)
 
-        target_heading = None
-        heading_target_s = 0.0
-        if self.tj.parent_trajectory is not None:
+        # to deal with fast replanning, need to have a lookahead to the next trajectory
+        if self.tj.parent_trajectory is not None:  
             parent = self.tj.parent_trajectory
-            parent_s, parent_d = parent.convert_xy_to_sd(ego.x, ego.y)
-            cte_x, cte_y = parent.convert_sd_to_xy(
-                parent_s + self.lookahead, parent_d
-            )
-            _, cte = self.tj.convert_xy_to_sd(cte_x, cte_y)
+            sp, dp =  parent.convert_xy_to_sd(ego.x, ego.y)
+            sp = sp + self.lookahead
+            x, y =  parent.convert_sd_to_xy(sp, dp)
+            s, cte = self.tj.convert_xy_to_sd(x, y)
+            s_, cte_ = self.tj.convert_xy_to_sd(ego.x, ego.y)
+            log.debug(f"CTE with Lookahead: {self.lookahead}, cte: {cte:.2f}, W.O LA cte: {cte_:.2f}")
+            # Also update current_wp for local trajectory to get correct target velocity
             self.tj.update_waypoint_by_xy(ego.x, ego.y)
-            heading_target_s = parent_s + self.heading_lookahead
-            target_heading = self._heading_at_s(parent, heading_target_s)
-        else:
+        else:   
             self.tj.update_waypoint_by_xy(ego.x, ego.y)
-            current_s, cte = self.tj.convert_xy_to_sd(ego.x, ego.y)
-            heading_target_s = current_s + self.heading_lookahead
+            s, cte = self.tj.convert_xy_to_sd(ego.x, ego.y)
 
         self.cte_steer = cte
-        if target_heading is None:
-            target_heading = self._heading_at_s(self.tj, heading_target_s)
-        heading_error = normalize_angle(target_heading - ego.theta)
-        raw_steer = heading_error + np.arctan2(
-            self.k * -cte, ego.velocity + self.k_soft
-        )
-        steer = float(
-            np.clip(raw_steer, self.ego_min_steering, self.ego_max_steering)
-        )
 
-        target_velocity = self.tj.velocity[self.tj.current_wp]
-        previous_error = self.cte_velocity
+        ##################################
+        # Compute the steering: Stanley
+        ##################################
+            
+        heading_error = normalize_angle(self.tj.get_current_heading() - ego.theta)
+        log.debug(f"heading error: {heading_error:+6.2f} [tj: {self.tj.get_current_heading():+6.2f}, ego: {ego.theta:+6.2f}]")
+        steer1 = heading_error + np.arctan2(self.k * -cte, ego.velocity + self.k_soft)
+        log.debug( f"Steer: {steer1:+6.2f} ")
+        steer = np.clip(steer1, -self.ego_max_steering, self.ego_max_steering)
+
+        ##################################
+        # Compute the velocity control PID
+        ##################################
+        idx = self.tj.current_wp
+        target_velocity = self.tj.velocity[idx]
+
+        prev_cte_v = self.cte_velocity
         self.cte_velocity = ego.velocity - target_velocity
-        if (
-            previous_error != 0.0
-            and self.cte_velocity != 0.0
-            and np.sign(previous_error) != np.sign(self.cte_velocity)
-        ):
-            self.cte_v_sum = 0.0
         self.cte_v_sum += self.cte_velocity
-        if self.vbeta != 0.0 and self.v_integral_accel_limit is not None:
-            integral_limit = abs(float(self.v_integral_accel_limit))
-            if integral_limit > 0.0:
-                sum_limit = integral_limit / abs(float(self.vbeta))
-                self.cte_v_sum = float(
-                    np.clip(self.cte_v_sum, -sum_limit, sum_limit)
-                )
 
-        v_p = -self.valpha * self.cte_velocity
-        v_i = -self.vbeta * self.cte_v_sum
-        v_d = -self.vgamma * (self.cte_velocity - previous_error)
-        acceleration = v_p + v_i + v_d
+        vP = -self.valpha * self.cte_velocity
+        vI = -self.vbeta * self.cte_v_sum
+        vD = -self.vgamma * (self.cte_velocity - prev_cte_v)  # D-term: rate of change of error
 
-        if (
-            target_velocity < self.setting.c30_emergency_velocity_threshold
-            and ego.velocity > self.setting.c30_emergency_min_moving_velocity
-        ):
-            emergency_acceleration = (
-                self.ego_min_acceleration
-                * self.setting.c30_emergency_braking_factor
-            )
-            acceleration = min(acceleration, emergency_acceleration)
+        # Compute the acceleration
+        acc = vP + vI + vD
+        
+        # Emergency braking: if target velocity is 0 (or very low) and we're still moving,
+        # apply maximum braking force regardless of PID output
+        if target_velocity < ControlSettings.c30_emergency_velocity_threshold and ego.velocity > ControlSettings.c30_emergency_min_moving_velocity:
+            # Emergency stop requested - apply max deceleration
+            emergency_acc = self.ego_min_acceleration * ControlSettings.c30_emergency_braking_factor  # 90% of max braking
+            if acc > emergency_acc:
+                log.warning(f"Emergency braking: overriding PID acc {acc:.2f} with {emergency_acc:.2f}")
+                acc = emergency_acc
+        
+        acc = np.clip(acc, self.ego_min_acceleration, self.ego_max_acceleration)
 
-        acceleration = float(
-            np.clip(
-                acceleration,
-                self.ego_min_acceleration,
-                self.ego_max_acceleration,
-            )
-        )
-        if ego.velocity <= 0.0 and self.cte_v_sum > 0.0:
+        # Anti-windup: clear integral when stopped so accumulated braking error
+        # does not keep pushing the car backwards past zero velocity.
+        if ego.velocity <= 0 and self.cte_v_sum > 0:
             self.cte_v_sum = 0.0
-        if ego.velocity <= 0.0 and acceleration < 0.0:
-            acceleration = 0.0
+        # Velocity floor: never command further deceleration when already at rest.
+        if ego.velocity <= 0 and acc < 0:
+            acc = 0.0
 
-        tracking_error_is_large = (
-            abs(self.cte_steer) > self.slow_down_cte
-            or abs(heading_error) > self.slow_down_heading_cte
-        )
-        if tracking_error_is_large and ego.velocity > self.slow_down_vel_threshold:
-            if self.cte_velocity > 0.0:
-                bounded_cte = float(np.clip(abs(self.cte_steer), 0.0, 20.0))
-                acceleration -= 3.0 * np.exp(bounded_cte)
-            else:
-                speed_deficit = max(0.0, target_velocity - ego.velocity)
-                acceleration = (
-                    min(acceleration, speed_deficit)
-                    if acceleration > 0.0
-                    else max(0.0, acceleration)
-                )
-            acceleration = float(
-                np.clip(
-                    acceleration,
-                    self.ego_min_acceleration,
-                    self.ego_max_acceleration,
-                )
-            )
+        # lower the speed if abs(steer) > 0.5
+        if (np.abs(self.cte_steer) > self.slow_down_cte or np.abs(heading_error) > self.slow_down_heading_cte) \
+            and ego.velocity > self.slow_down_vel_threshold:
+            steer_err = float(np.clip(np.abs(self.cte_steer), 0.0, 20.0))
+            acc2 = acc - 3 * np.exp(steer_err)
+            acc2 = np.clip(acc2, self.ego_min_acceleration, self.ego_max_acceleration)
+            log.debug(f"Steering error {self.cte_steer:+6.2f} is large, reducing acceleration from {acc:.2f} to {acc2:.2f}")
+            acc = acc2
 
-        cmd = ControlCommand(steer=steer, acceleration=acceleration)
+        log.debug(f"Acc  : {acc:+6.2f} [P={vP:+.3f}, I={vI:+.3f}, D={vD:+.3f}] based on CTE: {self.cte_velocity:+.2f} ({ego.velocity:.2f} vs target: {target_velocity:.2f})")
+
+        cmd = ControlCommand(steer=steer, acceleration=acc)
         self.cmd = cmd
         return cmd
 
     def reset(self):
-        self.cte_v_sum = 0.0
-        self.cte_velocity = 0.0
-        self.previous_cte_velocity = 0.0
+        self.cte_v_sum = 0
+        self.cte_velocity = 0
+        self.previous_cte_velocity = 0
 
 
 def normalize_angle(angle):
-    """Normalize angle to the [-pi, pi] range."""
+    """Normalize angle to [-pi, pi] range"""
     return ((angle + np.pi) % (2 * np.pi)) - np.pi

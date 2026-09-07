@@ -125,71 +125,6 @@ class TrajectoryTracker:
         segment_lengths = np.linalg.norm(diffs, axis=1)       # shape (n-1,)
         return np.concatenate(([0.0], np.cumsum(segment_lengths)))
 
-    def __is_closed_loop(self) -> bool:
-        return (
-            len(self.__reference_path) > 2
-            and np.linalg.norm(self.__reference_path[0] - self.__reference_path[-1]) < 1e-6
-        )
-
-    def __segment_distance(self, point, prev_wp: int, next_wp: int) -> tuple[float, float]:
-        start = self.__reference_path[prev_wp]
-        end = self.__reference_path[next_wp]
-        point_arr = np.array(point)
-        segment = end - start
-        segment_len_sq = float(np.dot(segment, segment))
-        if segment_len_sq <= 1e-12:
-            return float(np.linalg.norm(point_arr - start)), 0.0
-        ratio = max(0.0, min(1.0, float(np.dot(point_arr - start, segment) / segment_len_sq)))
-        projection = start + ratio * segment
-        return float(np.linalg.norm(point_arr - projection)), ratio
-
-    def __candidate_segments_for_waypoint(self, closest_wp: int) -> list[tuple[int, int]]:
-        n = len(self.__reference_path)
-        if n < 2:
-            return []
-
-        candidates: list[tuple[int, int]] = []
-        for prev_wp in range(closest_wp - 2, closest_wp + 3):
-            next_wp = prev_wp + 1
-            if 0 <= prev_wp < n - 1 and 0 <= next_wp < n:
-                candidates.append((prev_wp, next_wp))
-        if self.__is_closed_loop() and closest_wp <= 1:
-            candidates.append((n - 2, n - 1))
-
-        unique_candidates = []
-        seen = set()
-        for segment in candidates:
-            if segment not in seen:
-                unique_candidates.append(segment)
-                seen.add(segment)
-        return unique_candidates
-
-    def __project_point_to_segment(self, point, prev_wp: int, next_wp: int) -> tuple[float, float, float]:
-        start = self.__reference_path[prev_wp]
-        end = self.__reference_path[next_wp]
-        point_arr = np.array(point)
-        segment = end - start
-        segment_len_sq = float(np.dot(segment, segment))
-        if segment_len_sq <= 1e-12:
-            dist_vec = point_arr - start
-            return float(np.dot(dist_vec, dist_vec)), self.__cumulative_distances[prev_wp], 0.0
-
-        ratio = max(0.0, min(1.0, float(np.dot(point_arr - start, segment) / segment_len_sq)))
-        projection = start + ratio * segment
-        dist_vec = point_arr - projection
-        segment_len = math.sqrt(segment_len_sq)
-        normal = np.array([-segment[1], segment[0]])
-        d = float(np.dot(dist_vec, normal) / segment_len)
-        s = float(self.__cumulative_distances[prev_wp] + ratio * segment_len)
-        return float(np.dot(dist_vec, dist_vec)), s, d
-
-    def __use_closing_segment(self, point, closest_wp: int) -> bool:
-        if closest_wp != 0 or not self.__is_closed_loop():
-            return False
-        closing_dist, closing_ratio = self.__segment_distance(point, len(self.__reference_path) - 2, len(self.__reference_path) - 1)
-        forward_dist, _ = self.__segment_distance(point, 0, 1)
-        return closing_ratio < 1.0 - 1e-6 and closing_dist + 1e-6 < forward_dist
-
 
     
     def get_current_xy(self) -> tuple[float, float]:
@@ -272,8 +207,6 @@ class TrajectoryTracker:
         dists = np.sqrt(diffs[:, 0] ** 2 + diffs[:, 1] ** 2)
         closest_wp = int(np.argmin(dists))
         s_, d_ = self.convert_xy_path_to_sd_path([(x_current, y_current)])
-        if closest_wp == 0 and self.__is_closed_loop() and s_[0] > self.path_s[1]:
-            closest_wp = int(self.get_closest_waypoint_frm_sd(s_[0], d_[0]))
 
         if self.path_s[closest_wp] <= s_[0]:
             if closest_wp < len(self.__reference_path) - 1:
@@ -761,7 +694,7 @@ class TrajectoryTracker:
 
         Returns ``(s, d, dist_sq)`` where ``dist_sq`` is the squared distance from
         the point to the closest point on the *clamped* segment (for picking among
-        adjacent candidates). ``s`` uses an unclamped projection so queries
+        adjacent candidates). ``s``/``d`` use an unclamped projection so queries
         before path start / past path end still extrapolate.
         """
         reference_path = self.__reference_path
@@ -777,10 +710,19 @@ class TrajectoryTracker:
             return float(self.__cumulative_distances[prev_wp]), 0.0, dist_sq
 
         proj_norm = (x_x * n_x + x_y * n_y) / seg_len_sq
+        proj_x = proj_norm * n_x
+        proj_y = proj_norm * n_y
+
         # Arc-length: clamp the progress contribution to the segment so s stays
         # consistent when the unclamped foot falls outside [0, 1], but still allow
         # mild extrapolation via the unclamped foot for s itself.
         s = float(self.__cumulative_distances[prev_wp] + proj_norm * math.sqrt(seg_len_sq))
+
+        normal_x, normal_y = -n_y, n_x
+        residual_x = x_x - proj_x
+        residual_y = x_y - proj_y
+        norm_mag = math.sqrt(normal_x * normal_x + normal_y * normal_y)
+        d = (residual_x * normal_x + residual_y * normal_y) / norm_mag
 
         # Clamped foot for segment-selection distance.
         t = 0.0 if proj_norm < 0.0 else (1.0 if proj_norm > 1.0 else proj_norm)
@@ -789,14 +731,6 @@ class TrajectoryTracker:
         dx = x_x - foot_x
         dy = x_y - foot_y
         dist_sq = float(dx * dx + dy * dy)
-
-        # Keep the established dot-product form for d. Its numerical stability is
-        # part of persisted trajectory/profile fingerprints used by integrations.
-        segment = reference_path[next_wp] - reference_path[prev_wp]
-        projection = reference_path[prev_wp] + t * segment
-        dist_vec = np.asarray(point) - projection
-        normal = np.array([-segment[1], segment[0]])
-        d = float(np.dot(dist_vec, normal) / math.sqrt(seg_len_sq))
         return s, float(d), dist_sq
 
     def convert_xy_path_to_sd_path(self, points):
@@ -821,9 +755,14 @@ class TrajectoryTracker:
         frenet_coords = []
         for idx, point in enumerate(points_array):
             closest_wp = int(closest_wps[idx])
-            # Score nearby segments, including the final segment of a closed
-            # path when the duplicate start/end waypoint wins the KD query.
-            candidates = self.__candidate_segments_for_waypoint(closest_wp)
+            # Nearest waypoint alone is ambiguous after corners: the point may lie on
+            # the outgoing segment while the old code always used the incoming one,
+            # producing huge false CTE (e.g. on-path after a 90° turn). Score both.
+            candidates: list[tuple[int, int]] = []
+            if closest_wp > 0:
+                candidates.append((closest_wp - 1, closest_wp))
+            if closest_wp < n - 1:
+                candidates.append((closest_wp, closest_wp + 1))
 
             best = None
             for prev_wp, next_wp in candidates:
@@ -855,7 +794,11 @@ class TrajectoryTracker:
         out = np.empty((m, 2), dtype=float)
         for i in range(m):
             closest_wp = int(closest_wps[i])
-            candidates = self.__candidate_segments_for_waypoint(closest_wp)
+            candidates: list[tuple[int, int]] = []
+            if closest_wp > 0:
+                candidates.append((closest_wp - 1, closest_wp))
+            if closest_wp < n - 1:
+                candidates.append((closest_wp, closest_wp + 1))
             best = None
             for prev_wp, next_wp in candidates:
                 s, d, dist_sq = self._frenet_on_segment(points_array[i], prev_wp, next_wp)

@@ -53,13 +53,12 @@ class VisualizerApp(tk.Tk):
     exec: SyncExecuter | None
     hosting_plugin_name = "p60_visualizer_tk"
 
-    def __init__(self, initial_exec=None, initialize_stack: bool = True):
+    def __init__(self):
         DpiScale.setup()
         super().__init__()
         apply_ttk_theme(self, dark=True)
         self._dpi_scale: float = DpiScale.for_widget(self)
-        self.exec = initial_exec
-        self.initialize_stack = initialize_stack
+        self.exec = None
         self.loading_overlay = None
         self.ui_initialized = False
         self.show_loading_overlay()
@@ -115,15 +114,9 @@ class VisualizerApp(tk.Tk):
         self.grid_rowconfigure(0, weight=1)  # make the plot views expand
         self.update_views()
 
-        if self.initialize_stack:
-            log.info("Reloading stack to ensure configuration is applied.")
-            self.load_settings()
-            self.reload_stack(reload_code=False, preserve_plot_layout=True)
-        elif self.exec is not None:
-            self.exec_visualize_view.bridge_frame.update_for_bridge(
-                self.exec.world.world_capabilities,
-                self.exec.world.stack_capabilities,
-            )
+        log.info("Reloading stack to ensure configuration is applied.")
+        self.load_settings()
+        self.reload_stack(reload_code=False, preserve_plot_layout=True)
 
         # Bind to window resize to maintain ratio
         self.update_shortcut_mode()

@@ -53,26 +53,6 @@ class WorldBridge(ABC):
     def stack_capabilities(self) -> frozenset[StackCapability]:
         """Ground-truth stack capabilities this bridge provides (may be empty)."""
 
-    @property
-    def capabilities(self):
-        """Legacy combined capability view for pre-0.5 executers."""
-        from avlite.c60_common.c62_capabilities import WorldCapability as LegacyCapability
-
-        names = {cap.name for cap in self.world_capabilities}
-        ground_truth_names = {
-            StackCapability.DETECTION: "GT_DETECTION",
-            StackCapability.TRACKING: "GT_TRACKING",
-            StackCapability.LOCALIZATION: "GT_LOCALIZATION",
-        }
-        names.update(
-            legacy_name
-            for capability, legacy_name in ground_truth_names.items()
-            if capability in self.stack_capabilities
-        )
-        return frozenset(
-            capability for capability in LegacyCapability if capability.name in names
-        )
-
     @abstractmethod
     def control_ego_state(self, cmd: ControlCommandBase, dt: Optional[float] = 0.01):
         """

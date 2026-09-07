@@ -25,15 +25,6 @@ log = logging.getLogger(__name__)
 EGO_AGENT_ID: int = 0
 
 
-class PredictionMode(Enum):
-    """Legacy prediction representation selector retained for old plugins."""
-
-    TRAJECTORY = 1
-    OCCUPANCY_FLOW = 2
-    OCCUPANCY_FLOW_PER_AGENT = 3
-    NONE = 4
-
-
 
 
 @dataclass
@@ -44,15 +35,6 @@ class PerceptionModel:
     max_agent_vehicles: int = field(default_factory=lambda: PerceptionSettings.c11_max_agents)
     
     prediction: Optional[PredictionModelBase] = None
-
-    # Pre-0.5 prediction fields. New code should use the typed ``prediction``
-    # object above; these remain independent compatibility storage for plugins
-    # that copy legacy ground-truth snapshots.
-    prediction_mode: PredictionMode = PredictionMode.NONE
-    trajectories: Optional[np.ndarray] = None
-    occupancy_flow: Optional[list[np.ndarray]] = None
-    grid_bounds: Optional[dict[str, float]] = None
-    occupancy_flow_per_object: Optional[list[tuple[int, list[np.ndarray]]]] = None
 
     # Optional map (HDMap or RaceMap)
     map: Optional[Map] = None
@@ -80,11 +62,6 @@ class PerceptionModel:
         self.static_obstacles = []
         self.agent_vehicles = []
         self.prediction = None
-        self.prediction_mode = PredictionMode.NONE
-        self.trajectories = None
-        self.occupancy_flow = None
-        self.grid_bounds = None
-        self.occupancy_flow_per_object = None
         self.stack_event = None
 
 
@@ -225,17 +202,6 @@ class AgentState(State):
     velocity: float = 0.0
     agent_id: int = -1
     agent_type: AgentType = AgentType.ACKERMANN
-
-    # Pre-0.5 plugins read vehicle limits from the state object. Core 0.5
-    # controllers use c32 settings instead, but retaining these fields keeps
-    # external controllers source-compatible without coupling perception to
-    # the control layer.
-    L_f: float = 2.5
-    max_valocity: float = 99.0
-    max_acceleration: float = 10.0
-    min_acceleration: float = -20.0
-    max_steering: float = 0.7
-    min_steering: float = -0.7
 
 
 @dataclass
@@ -503,3 +469,4 @@ class HDMap(Map):
                 if right and left:
                     return True
         return False
+

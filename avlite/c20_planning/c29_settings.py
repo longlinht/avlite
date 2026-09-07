@@ -73,30 +73,3 @@ class PlanningSettingsSchema(SettingsSchema):
 
 # Singleton instance: mutated in place by the loader/reset helpers — never rebind.
 PlanningSettings = PlanningSettingsSchema()
-
-
-def _legacy_alias(target: str) -> property:
-    def get_value(self):
-        return getattr(self, target)
-
-    def set_value(self, value):
-        setattr(self, target, value)
-
-    return property(get_value, set_value)
-
-
-for _legacy_name, _canonical_name in {
-    "num_of_edge_points": "c28_num_of_edge_points",
-    "planning_horizon": "c28_planning_horizon",
-    "maneuver_distance": "c28_maneuver_distance",
-    "boundary_clearance": "c28_boundary_clearance",
-    "sample_size": "c28_sample_size",
-    "match_speed_wp_buffer": "c28_match_speed_wp_buffer",
-    "replan_wait_time": "c28_replan_wait_time",
-    "safety_margin_weight": "c28_safety_margin_weight",
-    "min_edge_progress_to_block": "c28_min_edge_progress_to_block",
-    "urgent_collision_threshold": "c28_urgent_collision_threshold",
-    "max_lateral_accel": "c28_max_lateral_accel",
-    "min_curvature_velocity": "c28_min_curvature_velocity",
-}.items():
-    setattr(PlanningSettingsSchema, _legacy_name, _legacy_alias(_canonical_name))

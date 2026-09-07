@@ -179,36 +179,6 @@ class LocalPlanningStrategy(ABC):
             LocalPlanningStrategy.registry[cls.__name__] = cls
 
 
-class LocalPlannerStrategy(LocalPlanningStrategy, abstract=True):
-    """Compatibility base for pre-0.5 plugins returning a trajectory directly.
-
-    New code should subclass :class:`LocalPlanningStrategy` and return a
-    :class:`LocalPlan`. This adapter intentionally implements only the legacy
-    surface still used by external plugins.
-    """
-
-    def __init__(
-        self,
-        global_plan: GlobalPlan,
-        pm: PerceptionModel,
-        planning_horizon: int = 3,
-        num_of_edge_points: int = 10,
-    ):
-        super().__init__(global_plan=global_plan, pm=pm)
-        self.planning_horizon = planning_horizon
-        self.num_of_edge_points = num_of_edge_points
-        self.selected_local_plan = None
-
-    def get_local_plan(self) -> TrajectoryTracker:
-        if self.selected_local_plan is not None:
-            return self.selected_local_plan.local_trajectory
-        return self.global_trajectory
-
-    def reset(self, wp: int = 0):
-        super().reset(wp)
-        self.selected_local_plan = None
-
-
 class LocalBehavioralPlanningStrategy(ABC):
     """Behavioral planning stage: decides high-level driving intent.
 

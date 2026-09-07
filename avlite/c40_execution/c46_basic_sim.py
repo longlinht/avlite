@@ -38,8 +38,7 @@ class BasicSim(WorldBridge):
                  controller: Optional[ControlStrategy] = None,
                  setting: ExecutionSettingsSchema = ExecutionSettings,
                  reference_point: tuple[float, float] | None = None,
-                 map: Map | None = None,
-                 npc_control: bool | None = None):
+                 map: Map | None = None):
         self.setting = setting
         self.ego_state = ego_state
         self.pm = pm
@@ -48,9 +47,7 @@ class BasicSim(WorldBridge):
         self.ego_controller = controller
         self.supports_ground_truth_detection = True
         self.supports_ground_truth_localization = True
-        self.npc_control = (
-            setting.c46_npc_control if npc_control is None else npc_control
-        )
+        self.npc_control = setting.c46_npc_control
         self.speed_factor = setting.c46_npc_speed_factor
         self.npc_controllers = {}
 
@@ -253,3 +250,4 @@ def boundary_segments_from_global_plan(plan) -> np.ndarray:
     if not segments:
         return np.empty((0, 2, 2))
     return np.concatenate(segments, axis=0)
+

@@ -6,50 +6,15 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 import logging
 import json
-import math
 
 from avlite.c10_perception.c11_perception_model import HDMap
 from avlite.c20_planning.c29_settings import PlanningSettings
 from avlite.c50_common.c54_trajectory_tracker import TrajectoryTracker, convert_sd_path_to_xy_path
-from avlite.c60_apps.c68_paths import DataPaths
 
 if TYPE_CHECKING:
     from avlite.c40_execution.c43_task_strategy import StackEvent
 
 log = logging.getLogger(__name__)
-
-
-def _resolve_plan_path(path: str | Path) -> Path:
-    expanded = Path(path).expanduser()
-    if expanded.is_absolute() or expanded.is_file():
-        return expanded
-    return Path(DataPaths.resolve_stored(str(path)))
-
-
-def _match_opposite_boundary_points(
-    source_points: list[tuple[float, float]],
-    opposite_points: list[tuple[float, float]],
-) -> list[tuple[float, float]]:
-    if not source_points or not opposite_points:
-        return []
-
-    n_source = len(source_points)
-    n_opposite = len(opposite_points)
-    search_window = min(n_opposite - 1, max(20, int(round(n_opposite * 0.04))))
-    matched_points = []
-    for i, source in enumerate(source_points):
-        nominal_j = int(round(i * n_opposite / n_source)) % n_opposite
-        best_j = nominal_j
-        best_dist_sq = math.inf
-        for offset in range(-search_window, search_window + 1):
-            j = (nominal_j + offset) % n_opposite
-            opposite = opposite_points[j]
-            dist_sq = (opposite[0] - source[0]) ** 2 + (opposite[1] - source[1]) ** 2
-            if dist_sq < best_dist_sq:
-                best_dist_sq = dist_sq
-                best_j = j
-        matched_points.append(opposite_points[best_j])
-    return matched_points
 
 
 @dataclass
@@ -84,7 +49,7 @@ class GlobalPlan:
 
     @staticmethod
     def is_loadable(path: str | Path) -> bool:
-        path = _resolve_plan_path(path)
+        path = Path(path)
         if path.suffix.lower() != ".json" or not path.is_file():
             return False
         try:
@@ -118,42 +83,8 @@ class GlobalPlan:
     
     @classmethod
     def from_file(cls, path_to_track: str) -> "GlobalPlan":
-        track_path = _resolve_plan_path(path_to_track)
-        with track_path.open("r") as f:
+        with open(path_to_track, "r") as f:
             data = json.load(f)
-            if "ReferenceLine" not in data and "LeftBound" in data and "RightBound" in data:
-                left_points = [point[:2] for point in data["LeftBound"]]
-                right_points = [point[:2] for point in data["RightBound"]]
-                matched_right_points = _match_opposite_boundary_points(left_points, right_points)
-                path = [
-                    ((left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0)
-                    for left, right in zip(left_points, matched_right_points)
-                ]
-                velocity = data.get("ReferenceSpeed") or [4.0] * len(path)
-                if len(velocity) != len(path):
-                    velocity = [4.0] * len(path)
-                trajectory = TrajectoryTracker(path=path, velocity=velocity)
-                left_boundary_d = [
-                    math.hypot(left[0] - center[0], left[1] - center[1])
-                    for left, center in zip(left_points, path)
-                ]
-                right_boundary_d = [
-                    -math.hypot(right[0] - center[0], right[1] - center[1])
-                    for right, center in zip(matched_right_points, path)
-                ]
-                return cls(
-                    start_point=path[0],
-                    goal_point=path[-1],
-                    path=path,
-                    velocity=velocity,
-                    left_boundary_d=left_boundary_d,
-                    right_boundary_d=right_boundary_d,
-                    trajectory=trajectory,
-                    left_boundary_x=[point[0] for point in left_points],
-                    left_boundary_y=[point[1] for point in left_points],
-                    right_boundary_x=[point[0] for point in matched_right_points],
-                    right_boundary_y=[point[1] for point in matched_right_points],
-                )
             path = [point[:2] for point in data["ReferenceLine"]]
             velocity = data["ReferenceSpeed"]
             if velocity and velocity[0] <= 0:
@@ -242,3 +173,5 @@ class LocalPlan:
             return None
         self.trajectory = TrajectoryTracker(path=self.path, velocity=self.velocity)
         return self.trajectory
+
+

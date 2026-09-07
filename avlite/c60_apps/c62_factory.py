@@ -324,13 +324,6 @@ def executor_factory(
     )
     if issubclass(executer_cls, AsyncThreadedExecuter):
         kwargs["combined_perception_planning"] = async_combined_perception_planning
-    constructor_params = inspect.signature(executer_cls.__init__).parameters
-    accepts_arbitrary_kwargs = any(
-        param.kind is inspect.Parameter.VAR_KEYWORD
-        for param in constructor_params.values()
-    )
-    if not accepts_arbitrary_kwargs:
-        kwargs = {key: value for key, value in kwargs.items() if key in constructor_params}
     return executer_cls(**kwargs)
 
 

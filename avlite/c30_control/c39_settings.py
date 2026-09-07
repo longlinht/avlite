@@ -20,18 +20,9 @@ class ControlSettingsSchema(SettingsSchema):
     c34_stanley_k: float = Field(default=5, description="Stanley controller cross-track gain.")
     c34_stanley_k_soft: float = Field(default=0.01, description="Stanley softening factor at low speed.")
     c34_stanley_lookahead: int = Field(default=5, description="Stanley lookahead waypoint index.")
-    c34_stanley_heading_lookahead: float = Field(
-        default=5.0,
-        description="Independent arc-length lookahead for the Stanley heading target (m).",
-    )
     c34_stanley_valpha: float = Field(default=0.8, description="Stanley velocity proportional gain.")
     c34_stanley_vbeta: float = Field(default=0.01, description="Stanley velocity integral gain.")
     c34_stanley_vgamma: float = Field(default=0.3, description="Stanley velocity derivative gain.")
-    c34_stanley_v_integral_accel_limit: float = Field(
-        default=2.0,
-        ge=0.0,
-        description="Maximum absolute acceleration contribution from the Stanley velocity integral term (m/s2).",
-    )
     c34_stanley_slow_down_cte: float = Field(default=0.5, description="Cross-track error threshold to slow down (m).")
     c34_stanley_slow_down_heading_cte: float = Field(
         default=float(np.pi / 6), description="Heading error threshold to slow down (rad)."
@@ -129,32 +120,3 @@ class ControlSettingsSchema(SettingsSchema):
 
 # Singleton instance: mutated in place by the loader/reset helpers — never rebind.
 ControlSettings = ControlSettingsSchema()
-
-
-def _legacy_alias(target: str) -> property:
-    def get_value(self):
-        return getattr(self, target)
-
-    def set_value(self, value):
-        setattr(self, target, value)
-
-    return property(get_value, set_value)
-
-
-for _legacy_name, _canonical_name in {
-    "stanley_k": "c34_stanley_k",
-    "stanley_k_soft": "c34_stanley_k_soft",
-    "stanley_lookahead": "c34_stanley_lookahead",
-    "stanley_heading_lookahead": "c34_stanley_heading_lookahead",
-    "stanley_valpha": "c34_stanley_valpha",
-    "stanley_vbeta": "c34_stanley_vbeta",
-    "stanley_vgamma": "c34_stanley_vgamma",
-    "stanley_v_integral_accel_limit": "c34_stanley_v_integral_accel_limit",
-    "stanley_slow_down_cte": "c34_stanley_slow_down_cte",
-    "stanley_slow_down_heading_cte": "c34_stanley_slow_down_heading_cte",
-    "stanley_slow_down_vel_threshold": "c34_stanley_slow_down_vel_threshold",
-    "emergency_velocity_threshold": "c30_emergency_velocity_threshold",
-    "emergency_min_moving_velocity": "c30_emergency_min_moving_velocity",
-    "emergency_braking_factor": "c30_emergency_braking_factor",
-}.items():
-    setattr(ControlSettingsSchema, _legacy_name, _legacy_alias(_canonical_name))

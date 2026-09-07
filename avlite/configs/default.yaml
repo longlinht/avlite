@@ -93,7 +93,6 @@ c30_control:
   c33_pid_vgamma: 0.3
   c34_stanley_k: 5.0
   c34_stanley_k_soft: 0.01
-  c34_stanley_heading_lookahead: 45.0
   c34_stanley_lookahead: 5
   c34_stanley_slow_down_cte: 0.5
   c34_stanley_slow_down_heading_cte: 0.5235987755982988
@@ -101,7 +100,6 @@ c30_control:
   c34_stanley_valpha: 0.8
   c34_stanley_vbeta: 0.01
   c34_stanley_vgamma: 0.3
-  c34_stanley_v_integral_accel_limit: 2.0
   c35_bubble_radius: 1.0
   c35_cruise_velocity: 5.0
   c35_lidar_z_max: 2.0
